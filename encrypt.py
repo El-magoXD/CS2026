@@ -1,7 +1,8 @@
+import glob
+from pathlib import Path
+
 from Crypto.Cipher import AES
 from Crypto.Random import get_random_bytes
-from pathlib import Path
-import glob
 
 # 1. GENERAR LA CLAVE DE 128 BITS (16 bytes = 128 bits)
 clave_128 = get_random_bytes(16)
