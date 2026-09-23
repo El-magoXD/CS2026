@@ -27,7 +27,7 @@ nonce = cipher_encrypt.nonce
 datos_encriptados, etiqueta_mac = cipher_encrypt.encrypt_and_digest(datos_originales)
 
 # Guardamos el nonce, la etiqueta de verificación (MAC) y los datos encriptados
-with open("./media/file_encrypted.bin", "wb") as archivo:
+with open("./data/file_encrypted.bin", "wb") as archivo:
     archivo.write(nonce)
     archivo.write(etiqueta_mac)
     archivo.write(datos_encriptados)
