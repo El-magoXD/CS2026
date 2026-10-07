@@ -9,6 +9,12 @@ Este proyecto implementa un flujo básico de cifrado de archivos:
 
 ## Uso
 
+Instala la dependencia de criptografía antes de ejecutar la aplicación:
+
+```bash
+python -m pip install -r requirements.txt
+```
+
 ### Interfaz gráfica
 
 Ejecuta la aplicación y selecciona la pestaña **Cifrar** o **Descifrar**:
