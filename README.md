@@ -7,17 +7,41 @@ Este proyecto implementa un flujo básico de cifrado de archivos:
 - Cifra la clave AES con la clave pública RSA.
 - Protege la clave privada RSA con una contraseña mediante KDF + AES-GCM.
 
-## Uso
+## Preparar el entorno
 
-Instala la dependencia de criptografía antes de ejecutar la aplicación:
+Crea un entorno virtual desde la carpeta del proyecto:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+En Windows (PowerShell), usa:
+
+```powershell
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
+```
+
+Con el entorno virtual activado, instala las dependencias:
 
 ```bash
 python -m pip install -r requirements.txt
 ```
 
+Para iniciar la aplicación gráfica:
+
+```bash
+python main.py
+```
+
+Cuando termines, puedes salir del entorno virtual con `deactivate`.
+
+## Uso
+
 ### Interfaz gráfica
 
-Ejecuta la aplicación y selecciona la pestaña **Cifrar** o **Descifrar**:
+Con el entorno virtual activado, selecciona la pestaña **Cifrar** o **Descifrar**:
 
 ```bash
 python main.py
