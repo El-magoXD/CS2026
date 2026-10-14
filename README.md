@@ -146,3 +146,68 @@ python decrypt.py \
 - Si pierdes la clave privada o la contraseña, no podrás descifrar los archivos protegidos por ese par RSA. La clave AES cifrada de cada archivo debe corresponder a esa misma clave privada.
 - El `.gitignore` excluye `data/`, `media/`, claves y archivos cifrados para no publicar datos locales accidentalmente. La clave pública no es secreta, pero en este proyecto también se guarda en `data/` y queda excluida.
 - `.gitignore` no elimina archivos que ya estén siendo seguidos por Git ni borra archivos publicados anteriormente. Antes de subir cambios, revisa el estado del repositorio y asegúrate de que no haya claves privadas ni datos personales.
+
+## Para convertir ejecutable
+
+Sí. Para generar un **`.exe` de Windows**, usa **PyInstaller desde Windows**, no desde WSL. La versión que genera PyInstaller depende del sistema donde se ejecuta: desde WSL producirías un ejecutable Linux, no un `.exe` de Windows.
+
+Hay un ajuste importante antes de empaquetar: ahora mismo la base de datos se guarda en `data/`, junto al proyecto. En una aplicación instalada, esa ruta puede estar dentro de una carpeta de solo lectura o del paquete temporal de PyInstaller. Conviene que el ejecutable use una carpeta de datos del usuario, como `%LOCALAPPDATA%\CS2026`.
+
+En `database.py`, cambia la definición de `DEFAULT_DATABASE_PATH` para usar esa ubicación cuando la aplicación esté empaquetada:
+
+```python
+import os
+import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+if getattr(sys, "frozen", False):
+    DATA_DIR = Path(os.environ["LOCALAPPDATA"]) / "CS2026"
+else:
+    DATA_DIR = PROJECT_ROOT / "data"
+
+DEFAULT_DATABASE_PATH = DATA_DIR / "secure_storage.sqlite3"
+```
+
+La capa de base de datos crea la carpeta si todavía no existe. Así, en desarrollo se mantiene `data/secure_storage.sqlite3` y, en el `.exe`, la aplicación puede escribir en la carpeta del usuario.
+
+### Crear el ejecutable
+
+1. Copia o abre el proyecto en una carpeta normal de Windows —por ejemplo, `C:\Users\TuUsuario\CS2026`—. No incluyas `.venv`, `data` ni `media`: contienen dependencias locales o datos personales.
+
+2. En PowerShell, dentro de la carpeta del proyecto, prepara el entorno:
+
+```powershell
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python -m pip install pyinstaller
+```
+
+3. Genera primero la versión recomendada, en formato de carpeta:
+
+```powershell
+python -m PyInstaller --noconfirm --clean --onedir --windowed --name CS2026 main.py
+```
+
+El ejecutable queda en:
+
+```text
+dist\CS2026\CS2026.exe
+```
+
+Prueba a abrirlo directamente desde esa carpeta. En formato `--onedir`, distribuye **toda la carpeta `dist\CS2026`**, no solo el `.exe`.
+
+Cuando esa versión funcione, puedes probar un único archivo:
+
+```powershell
+python -m PyInstaller --noconfirm --clean --onefile --windowed --name CS2026 main.py
+```
+
+Ese ejecutable queda en `dist\CS2026.exe`, pero tarda más en arrancar y extrae componentes a una carpeta temporal, por eso recomiendo empezar con `--onedir`.
+
+SQLite ya viene incluido con Python y Tkinter normalmente se detecta automáticamente. Si al abrir la aplicación empaquetada aparece un error indicando que no encuentra `Crypto`, prueba a generar el paquete con `--collect-all Crypto`.
+
+La base de datos y las claves **no deben incluirse dentro del ejecutable ni subirse al repositorio**. El programa creará sus propios datos al ejecutarse. Si quieres conservar tu base de datos actual, haz una copia de seguridad privada antes de cambiar la ruta; no la distribuyas con el `.exe`.
