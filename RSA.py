@@ -1,6 +1,10 @@
 """Compatibility wrapper around the cryptographic helpers."""
 
-from crypto.passwords import decrypt_private_key, derive_key_password, encrypt_private_key
+from crypto.passwords import (
+    decrypt_private_key,
+    derive_key_password,
+    encrypt_private_key,
+)
 from crypto.rsa import decrypt_with_private, encrypt_with_public, generate_rsa_keys
 
 

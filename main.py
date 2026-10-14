@@ -7,16 +7,17 @@ import threading
 import tkinter as tk
 from collections.abc import Callable
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
-from crypto.aes import decrypt_file, encrypt_file, generate_aes_key
+from crypto.aes import decrypt_file
 from crypto.passwords import decrypt_private_key
-from crypto.rsa import decrypt_with_private, encrypt_with_public
-from encrypt import (
-    DEFAULT_DATA_DIR,
-    DEFAULT_PRIVATE_KEY_PATH,
-    DEFAULT_PUBLIC_KEY_PATH,
-    ensure_rsa_keypair,
+from crypto.rsa import decrypt_with_private
+from database.database import DEFAULT_DATABASE_PATH, initialize_database
+from decrypt import DEFAULT_PRIVATE_KEY_PATH
+from services.file_service import (
+    decrypt_file_from_database,
+    encrypt_file_to_database,
+    get_database_files,
 )
 
 
@@ -24,16 +25,15 @@ class CryptoApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("Cifrado de archivos AES + RSA")
-        self.geometry("720x470")
-        self.minsize(640, 430)
+        self.geometry("820x560")
+        self.minsize(700, 500)
+        initialize_database(DEFAULT_DATABASE_PATH)
 
         self.results: queue.Queue[tuple[bool, str, str]] = queue.Queue()
         self.active_button: ttk.Button | None = None
 
         self.encrypt_input = tk.StringVar()
-        self.encrypt_output = tk.StringVar()
         self.encrypt_password = tk.StringVar()
-        self._auto_encrypt_output = True
 
         self.decrypt_input = tk.StringVar()
         self.decrypt_key_file = tk.StringVar()
@@ -60,11 +60,14 @@ class CryptoApp(tk.Tk):
 
         encrypt_tab = ttk.Frame(notebook, padding=14)
         decrypt_tab = ttk.Frame(notebook, padding=14)
+        library_tab = ttk.Frame(notebook, padding=14)
         notebook.add(encrypt_tab, text="Cifrar")
         notebook.add(decrypt_tab, text="Descifrar")
+        notebook.add(library_tab, text="Biblioteca SQLite")
 
         self._build_encrypt_tab(encrypt_tab)
         self._build_decrypt_tab(decrypt_tab)
+        self._build_library_tab(library_tab)
 
         ttk.Separator(container).pack(fill="x", pady=(12, 8))
         ttk.Label(container, textvariable=self.status, wraplength=680).pack(anchor="w")
@@ -102,31 +105,24 @@ class CryptoApp(tk.Tk):
             self.encrypt_input,
             self._choose_encrypt_input,
         )
-        self._add_file_row(
-            parent,
-            1,
-            "Guardar archivo cifrado como",
-            self.encrypt_output,
-            self._choose_encrypt_output,
-        )
-        self._add_password_row(parent, 2, self.encrypt_password)
+        self._add_password_row(parent, 1, self.encrypt_password)
 
         ttk.Label(
             parent,
             text=(
-                "La clave AES cifrada se guardará junto al archivo como "
-                "«nombre.key.enc». La clave privada RSA protegida se guarda en "
-                f"{DEFAULT_DATA_DIR}."
+                "El contenido cifrado, su clave AES cifrada con RSA y la clave "
+                "privada RSA protegida se guardarán en la base de datos local:\n"
+                f"{DEFAULT_DATABASE_PATH}"
             ),
             wraplength=620,
-        ).grid(row=3, column=0, columnspan=3, sticky="w", pady=(12, 8))
+        ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(12, 8))
 
         self.encrypt_button = ttk.Button(
             parent,
-            text="Cifrar archivo",
+            text="Cifrar y guardar en SQLite",
             command=self._start_encryption,
         )
-        self.encrypt_button.grid(row=4, column=0, columnspan=3, sticky="e", pady=(12, 0))
+        self.encrypt_button.grid(row=3, column=0, columnspan=3, sticky="e", pady=(12, 0))
 
     def _build_decrypt_tab(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(1, weight=1)
@@ -174,27 +170,76 @@ class CryptoApp(tk.Tk):
         )
         self.decrypt_button.grid(row=6, column=0, columnspan=3, sticky="e", pady=(12, 0))
 
+    def _build_library_tab(self, parent: ttk.Frame) -> None:
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(1, weight=1)
+        ttk.Label(
+            parent,
+            text=f"Archivos y claves protegidas almacenados en:\n{DEFAULT_DATABASE_PATH}",
+            wraplength=680,
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
+
+        self.library = ttk.Treeview(
+            parent,
+            columns=("id", "name", "created", "size"),
+            show="headings",
+            selectmode="browse",
+        )
+        self.library.heading("id", text="ID")
+        self.library.heading("name", text="Archivo original")
+        self.library.heading("created", text="Guardado")
+        self.library.heading("size", text="Tamaño")
+        self.library.column("id", width=55, stretch=False, anchor="center")
+        self.library.column("name", width=260)
+        self.library.column("created", width=190)
+        self.library.column("size", width=100, stretch=False, anchor="e")
+        self.library.grid(row=1, column=0, columnspan=2, sticky="nsew")
+
+        scrollbar = ttk.Scrollbar(parent, orient="vertical", command=self.library.yview)
+        scrollbar.grid(row=1, column=2, sticky="ns")
+        self.library.configure(yscrollcommand=scrollbar.set)
+        self.library.bind("<Double-1>", self._on_library_double_click)
+
+        ttk.Button(
+            parent,
+            text="Actualizar lista",
+            command=self._refresh_library,
+        ).grid(row=2, column=0, sticky="w", pady=(12, 0))
+        self.decrypt_stored_button = ttk.Button(
+            parent,
+            text="Descifrar seleccionado…",
+            command=self._decrypt_selected_database_file,
+        )
+        self.decrypt_stored_button.grid(row=2, column=1, sticky="e", pady=(12, 0))
+        self._refresh_library()
+
+    def _on_library_double_click(self, event: tk.Event) -> None:
+        row = self.library.identify_row(event.y)
+        if row:
+            self.library.selection_set(row)
+            self._decrypt_selected_database_file()
+
+    def _refresh_library(self) -> None:
+        entries = self.library.get_children()
+        if entries:
+            self.library.delete(*entries)
+        for entry in get_database_files(DEFAULT_DATABASE_PATH):
+            self.library.insert(
+                "",
+                "end",
+                values=(
+                    entry.id,
+                    entry.original_name,
+                    entry.created_at,
+                    f"{entry.size_bytes:,} bytes",
+                ),
+            )
+
     def _choose_encrypt_input(self) -> None:
         selected = filedialog.askopenfilename(title="Seleccionar archivo para cifrar")
         if not selected:
             return
-        source = Path(selected)
-        self.encrypt_input.set(str(source))
-        if self._auto_encrypt_output:
-            self.encrypt_output.set(str(source.with_name(f"{source.stem}.enc")))
-
-    def _choose_encrypt_output(self) -> None:
-        source = Path(self.encrypt_input.get()) if self.encrypt_input.get() else None
-        initial_name = f"{source.stem}.enc" if source else "archivo.enc"
-        selected = filedialog.asksaveasfilename(
-            title="Guardar archivo cifrado",
-            initialdir=str(source.parent) if source else str(DEFAULT_DATA_DIR),
-            initialfile=initial_name,
-            defaultextension=".enc",
-        )
-        if selected:
-            self.encrypt_output.set(selected)
-            self._auto_encrypt_output = False
+        self.encrypt_input.set(selected)
 
     def _choose_decrypt_input(self) -> None:
         selected = filedialog.askopenfilename(
@@ -255,61 +300,97 @@ class CryptoApp(tk.Tk):
 
     def _start_encryption(self) -> None:
         source_text = self.encrypt_input.get().strip()
-        output_text = self.encrypt_output.get().strip()
         password = self.encrypt_password.get()
-        if not source_text or not output_text or not password:
+        if not source_text or not password:
             messagebox.showerror(
                 "Faltan datos",
-                "Selecciona el archivo original, la salida y escribe la contraseña.",
+                "Selecciona el archivo original y escribe la contraseña.",
                 parent=self,
             )
             return
 
         source = Path(source_text).expanduser().resolve()
-        output = Path(output_text).expanduser().resolve()
-        key_output = output.with_suffix(".key.enc")
         if not source.is_file():
             messagebox.showerror("Archivo no encontrado", f"No existe el archivo:\n{source}", parent=self)
-            return
-        if source in (output, key_output):
-            messagebox.showerror(
-                "Salida no válida",
-                "La salida o la clave cifrada no pueden sobrescribir el archivo original.",
-                parent=self,
-            )
-            return
-        if not self._confirm_overwrite([output, key_output]):
             return
 
         self._run_in_background(
             self.encrypt_button,
-            "Cifrado completado",
-            lambda: self._encrypt(source, output, key_output, password),
+            "Cifrado guardado en SQLite",
+            lambda: self._encrypt(source, password),
         )
 
-    def _encrypt(self, source: Path, output: Path, key_output: Path, password: str) -> str:
+    def _encrypt(self, source: Path, password: str) -> str:
         try:
-            public_key = ensure_rsa_keypair(
-                DEFAULT_PUBLIC_KEY_PATH,
-                DEFAULT_PRIVATE_KEY_PATH,
-                password,
-            )
+            file_id = encrypt_file_to_database(source, password, DEFAULT_DATABASE_PATH)
         except ValueError as exc:
             raise ValueError(
-                "No se pudo validar la clave RSA existente. Comprueba la contraseña "
+                "No se pudo validar o guardar el par RSA. Comprueba la contraseña "
                 f"y los archivos de clave. Detalle: {exc}"
             ) from exc
 
-        output.parent.mkdir(parents=True, exist_ok=True)
-        aes_key = generate_aes_key()
-        encrypted_aes_key = encrypt_with_public(aes_key, public_key)
-        encrypt_file(source, output, aes_key)
-        key_output.write_bytes(encrypted_aes_key)
-        return (
-            f"Archivo cifrado:\n{output}\n\n"
-            f"Clave AES cifrada:\n{key_output}\n\n"
-            f"Clave privada RSA protegida:\n{DEFAULT_PRIVATE_KEY_PATH}"
+        return f"{source.name} se guardó cifrado en SQLite con el ID {file_id}."
+
+    def _decrypt_selected_database_file(self) -> None:
+        selection = self.library.selection()
+        if not selection:
+            messagebox.showerror(
+                "No hay selección",
+                "Selecciona un archivo de la biblioteca.",
+                parent=self,
+            )
+            return
+
+        values = self.library.item(selection[0], "values")
+        file_id = int(values[0])
+        original_name = str(values[1])
+        password = simpledialog.askstring(
+            "Contraseña",
+            "Contraseña de la clave privada RSA:",
+            show="*",
+            parent=self,
         )
+        if password is None:
+            return
+        if not password:
+            messagebox.showerror(
+                "Falta la contraseña",
+                "Escribe la contraseña de la clave privada RSA.",
+                parent=self,
+            )
+            return
+
+        output = filedialog.asksaveasfilename(
+            title="Guardar archivo descifrado",
+            initialdir=str(Path.home()),
+            initialfile=original_name,
+        )
+        if not output:
+            return
+        destination = Path(output).expanduser().resolve()
+        if not self._confirm_overwrite([destination]):
+            return
+
+        self._run_in_background(
+            self.decrypt_stored_button,
+            "Descifrado completado",
+            lambda: self._decrypt_database_file(file_id, password, destination),
+        )
+
+    def _decrypt_database_file(self, file_id: int, password: str, output: Path) -> str:
+        try:
+            destination = decrypt_file_from_database(
+                file_id,
+                password,
+                output,
+                DEFAULT_DATABASE_PATH,
+            )
+        except ValueError as exc:
+            raise ValueError(
+                "No se pudo descifrar el archivo. Comprueba la contraseña y que "
+                f"los datos no estén dañados. Detalle: {exc}"
+            ) from exc
+        return f"Archivo descifrado correctamente:\n{destination}"
 
     def _start_decryption(self) -> None:
         encrypted_text = self.decrypt_input.get().strip()
@@ -424,6 +505,8 @@ class CryptoApp(tk.Tk):
             self.active_button = None
         self.status.set(message.splitlines()[0])
         if succeeded:
+            if title == "Cifrado guardado en SQLite":
+                self._refresh_library()
             messagebox.showinfo(title, message, parent=self)
         else:
             messagebox.showerror("No se pudo completar la operación", message, parent=self)
