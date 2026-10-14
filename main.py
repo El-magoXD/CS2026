@@ -5,14 +5,19 @@ from __future__ import annotations
 import queue
 import threading
 import tkinter as tk
+from collections.abc import Callable
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
-from typing import Callable
 
 from crypto.aes import decrypt_file, encrypt_file, generate_aes_key
 from crypto.passwords import decrypt_private_key
 from crypto.rsa import decrypt_with_private, encrypt_with_public
-from encrypt import DEFAULT_DATA_DIR, DEFAULT_PRIVATE_KEY_PATH, DEFAULT_PUBLIC_KEY_PATH, ensure_rsa_keypair
+from encrypt import (
+    DEFAULT_DATA_DIR,
+    DEFAULT_PRIVATE_KEY_PATH,
+    DEFAULT_PUBLIC_KEY_PATH,
+    ensure_rsa_keypair,
+)
 
 
 class CryptoApp(tk.Tk):

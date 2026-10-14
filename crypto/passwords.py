@@ -6,7 +6,6 @@ from Crypto.Cipher import AES
 from Crypto.PublicKey import RSA
 from Crypto.Random import get_random_bytes
 
-
 DEFAULT_KDF_ITERATIONS = 200_000
 
 
