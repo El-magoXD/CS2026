@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import sys
 import sqlite3
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -8,7 +10,13 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_DATABASE_PATH = PROJECT_ROOT / "data" / "secure_storage.sqlite3"
+
+if getattr(sys, "frozen", False):
+    DATA_DIR = Path(os.environ["LOCALAPPDATA"]) / "CS2026"
+else:
+    DATA_DIR = PROJECT_ROOT / "data"
+
+DEFAULT_DATABASE_PATH = DATA_DIR / "secure_storage.sqlite3"
 
 
 @dataclass(frozen=True)
