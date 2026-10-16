@@ -7,39 +7,42 @@ import threading
 import tkinter as tk
 from collections.abc import Callable
 from pathlib import Path
-from tkinter import filedialog, messagebox, simpledialog, ttk
+from tkinter import filedialog, messagebox, ttk
 
-from crypto.aes import decrypt_file
-from crypto.passwords import decrypt_private_key
-from crypto.rsa import decrypt_with_private
-from database.database import DEFAULT_DATABASE_PATH, initialize_database
-from decrypt import DEFAULT_PRIVATE_KEY_PATH
+from Crypto.PublicKey import RSA
+
+from database.database import DEFAULT_DATABASE_PATH, initialize_database, list_users
 from services.file_service import (
+    AuthenticatedUser,
+    authenticate_user,
+    decrypt_external_file,
     decrypt_file_from_database,
     encrypt_file_to_database,
     get_database_files,
+    register_user,
 )
 
 
 class CryptoApp(tk.Tk):
-    def __init__(self) -> None:
+    def __init__(self, session: AuthenticatedUser) -> None:
         super().__init__()
-        self.title("Cifrado de archivos AES + RSA")
+        self.user_id = session.id
+        self.username = session.username
+        self.private_key: RSA.RsaKey | None = session.private_key
+        self.title(f"Cifrado de archivos AES + RSA — {self.username}")
         self.geometry("820x560")
         self.minsize(700, 500)
         initialize_database(DEFAULT_DATABASE_PATH)
+        self.protocol("WM_DELETE_WINDOW", self._close_app)
 
         self.results: queue.Queue[tuple[bool, str, str]] = queue.Queue()
         self.active_button: ttk.Button | None = None
 
         self.encrypt_input = tk.StringVar()
-        self.encrypt_password = tk.StringVar()
 
         self.decrypt_input = tk.StringVar()
         self.decrypt_key_file = tk.StringVar()
-        self.decrypt_private_key = tk.StringVar(value=str(DEFAULT_PRIVATE_KEY_PATH))
         self.decrypt_output = tk.StringVar()
-        self.decrypt_password = tk.StringVar()
 
         self.status = tk.StringVar(value="Selecciona una operación.")
         self._build_ui()
@@ -50,7 +53,7 @@ class CryptoApp(tk.Tk):
 
         heading = ttk.Label(
             container,
-            text="Cifrado de archivos",
+            text=f"Cifrado de archivos — sesión: {self.username}",
             font=("TkDefaultFont", 16, "bold"),
         )
         heading.pack(anchor="w", pady=(0, 12))
@@ -87,14 +90,6 @@ class CryptoApp(tk.Tk):
             row=row, column=2, sticky="ew", pady=7
         )
 
-    def _add_password_row(self, parent: ttk.Frame, row: int, variable: tk.StringVar) -> None:
-        ttk.Label(parent, text="Contraseña de la clave RSA").grid(
-            row=row, column=0, sticky="w", pady=7
-        )
-        ttk.Entry(parent, textvariable=variable, show="*").grid(
-            row=row, column=1, columnspan=2, sticky="ew", padx=(12, 0), pady=7
-        )
-
     def _build_encrypt_tab(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(1, weight=1)
 
@@ -105,24 +100,22 @@ class CryptoApp(tk.Tk):
             self.encrypt_input,
             self._choose_encrypt_input,
         )
-        self._add_password_row(parent, 1, self.encrypt_password)
-
         ttk.Label(
             parent,
             text=(
-                "El contenido cifrado, su clave AES cifrada con RSA y la clave "
-                "privada RSA protegida se guardarán en la base de datos local:\n"
-                f"{DEFAULT_DATABASE_PATH}"
+                "La clave privada RSA de esta cuenta ya se desbloqueó al iniciar "
+                "sesión. El contenido cifrado y su clave AES protegida se guardarán "
+                f"en:\n{DEFAULT_DATABASE_PATH}"
             ),
             wraplength=620,
-        ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(12, 8))
+        ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(12, 8))
 
         self.encrypt_button = ttk.Button(
             parent,
             text="Cifrar y guardar en SQLite",
             command=self._start_encryption,
         )
-        self.encrypt_button.grid(row=3, column=0, columnspan=3, sticky="e", pady=(12, 0))
+        self.encrypt_button.grid(row=2, column=0, columnspan=3, sticky="e", pady=(12, 0))
 
     def _build_decrypt_tab(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(1, weight=1)
@@ -144,38 +137,36 @@ class CryptoApp(tk.Tk):
         self._add_file_row(
             parent,
             2,
-            "Clave privada RSA protegida",
-            self.decrypt_private_key,
-            self._choose_decrypt_private_key,
-        )
-        self._add_file_row(
-            parent,
-            3,
             "Guardar archivo descifrado como",
             self.decrypt_output,
             self._choose_decrypt_output,
         )
-        self._add_password_row(parent, 4, self.decrypt_password)
 
         ttk.Label(
             parent,
-            text="El nombre y la extensión de salida los eliges aquí.",
+            text=(
+                "Se utilizará la clave privada RSA desbloqueada al iniciar sesión. "
+                "El nombre y la extensión de salida los eliges aquí."
+            ),
             wraplength=620,
-        ).grid(row=5, column=0, columnspan=3, sticky="w", pady=(12, 8))
+        ).grid(row=3, column=0, columnspan=3, sticky="w", pady=(12, 8))
 
         self.decrypt_button = ttk.Button(
             parent,
             text="Descifrar archivo",
             command=self._start_decryption,
         )
-        self.decrypt_button.grid(row=6, column=0, columnspan=3, sticky="e", pady=(12, 0))
+        self.decrypt_button.grid(row=4, column=0, columnspan=3, sticky="e", pady=(12, 0))
 
     def _build_library_tab(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(0, weight=1)
         parent.rowconfigure(1, weight=1)
         ttk.Label(
             parent,
-            text=f"Archivos y claves protegidas almacenados en:\n{DEFAULT_DATABASE_PATH}",
+            text=(
+                f"Archivos de {self.username} guardados en:\n"
+                f"{DEFAULT_DATABASE_PATH}"
+            ),
             wraplength=680,
         ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
 
@@ -223,7 +214,7 @@ class CryptoApp(tk.Tk):
         entries = self.library.get_children()
         if entries:
             self.library.delete(*entries)
-        for entry in get_database_files(DEFAULT_DATABASE_PATH):
+        for entry in get_database_files(self.user_id, DEFAULT_DATABASE_PATH):
             self.library.insert(
                 "",
                 "end",
@@ -264,15 +255,6 @@ class CryptoApp(tk.Tk):
         if selected:
             self.decrypt_key_file.set(selected)
 
-    def _choose_decrypt_private_key(self) -> None:
-        selected = filedialog.askopenfilename(
-            title="Seleccionar clave privada RSA protegida",
-            initialdir=str(DEFAULT_PRIVATE_KEY_PATH.parent),
-            filetypes=[("Claves privadas protegidas", "*.enc"), ("Todos los archivos", "*")],
-        )
-        if selected:
-            self.decrypt_private_key.set(selected)
-
     def _choose_decrypt_output(self) -> None:
         encrypted_file = Path(self.decrypt_input.get()) if self.decrypt_input.get() else None
         initial_name = (
@@ -300,11 +282,10 @@ class CryptoApp(tk.Tk):
 
     def _start_encryption(self) -> None:
         source_text = self.encrypt_input.get().strip()
-        password = self.encrypt_password.get()
-        if not source_text or not password:
+        if not source_text:
             messagebox.showerror(
                 "Faltan datos",
-                "Selecciona el archivo original y escribe la contraseña.",
+                "Selecciona el archivo original.",
                 parent=self,
             )
             return
@@ -317,18 +298,15 @@ class CryptoApp(tk.Tk):
         self._run_in_background(
             self.encrypt_button,
             "Cifrado guardado en SQLite",
-            lambda: self._encrypt(source, password),
+            lambda: self._encrypt(source),
         )
 
-    def _encrypt(self, source: Path, password: str) -> str:
-        try:
-            file_id = encrypt_file_to_database(source, password, DEFAULT_DATABASE_PATH)
-        except ValueError as exc:
-            raise ValueError(
-                "No se pudo validar o guardar el par RSA. Comprueba la contraseña "
-                f"y los archivos de clave. Detalle: {exc}"
-            ) from exc
-
+    def _encrypt(self, source: Path) -> str:
+        file_id = encrypt_file_to_database(
+            source,
+            self.user_id,
+            DEFAULT_DATABASE_PATH,
+        )
         return f"{source.name} se guardó cifrado en SQLite con el ID {file_id}."
 
     def _decrypt_selected_database_file(self) -> None:
@@ -344,21 +322,6 @@ class CryptoApp(tk.Tk):
         values = self.library.item(selection[0], "values")
         file_id = int(values[0])
         original_name = str(values[1])
-        password = simpledialog.askstring(
-            "Contraseña",
-            "Contraseña de la clave privada RSA:",
-            show="*",
-            parent=self,
-        )
-        if password is None:
-            return
-        if not password:
-            messagebox.showerror(
-                "Falta la contraseña",
-                "Escribe la contraseña de la clave privada RSA.",
-                parent=self,
-            )
-            return
 
         output = filedialog.asksaveasfilename(
             title="Guardar archivo descifrado",
@@ -374,47 +337,37 @@ class CryptoApp(tk.Tk):
         self._run_in_background(
             self.decrypt_stored_button,
             "Descifrado completado",
-            lambda: self._decrypt_database_file(file_id, password, destination),
+            lambda: self._decrypt_database_file(file_id, destination),
         )
 
-    def _decrypt_database_file(self, file_id: int, password: str, output: Path) -> str:
-        try:
-            destination = decrypt_file_from_database(
-                file_id,
-                password,
-                output,
-                DEFAULT_DATABASE_PATH,
-            )
-        except ValueError as exc:
-            raise ValueError(
-                "No se pudo descifrar el archivo. Comprueba la contraseña y que "
-                f"los datos no estén dañados. Detalle: {exc}"
-            ) from exc
+    def _decrypt_database_file(self, file_id: int, output: Path) -> str:
+        destination = decrypt_file_from_database(
+            file_id,
+            self.user_id,
+            self._require_private_key(),
+            output,
+            DEFAULT_DATABASE_PATH,
+        )
         return f"Archivo descifrado correctamente:\n{destination}"
 
     def _start_decryption(self) -> None:
         encrypted_text = self.decrypt_input.get().strip()
         key_text = self.decrypt_key_file.get().strip()
-        private_text = self.decrypt_private_key.get().strip()
         output_text = self.decrypt_output.get().strip()
-        password = self.decrypt_password.get()
-        if not all((encrypted_text, key_text, private_text, output_text, password)):
+        if not all((encrypted_text, key_text, output_text)):
             messagebox.showerror(
                 "Faltan datos",
-                "Selecciona el archivo cifrado, su clave AES, la clave privada, "
-                "la salida y escribe la contraseña.",
+                "Selecciona el archivo cifrado, su clave AES y la ruta de salida.",
                 parent=self,
             )
             return
 
         encrypted_file = Path(encrypted_text).expanduser().resolve()
         key_file = Path(key_text).expanduser().resolve()
-        private_key_file = Path(private_text).expanduser().resolve()
         output = Path(output_text).expanduser().resolve()
         for path, description in (
             (encrypted_file, "archivo cifrado"),
             (key_file, "clave AES cifrada"),
-            (private_key_file, "clave privada RSA"),
         ):
             if not path.is_file():
                 messagebox.showerror(
@@ -423,10 +376,10 @@ class CryptoApp(tk.Tk):
                     parent=self,
                 )
                 return
-        if output in (encrypted_file, key_file, private_key_file):
+        if output in (encrypted_file, key_file):
             messagebox.showerror(
                 "Salida no válida",
-                "El archivo de salida no puede sobrescribir ninguno de los archivos de entrada.",
+                "El archivo de salida no puede sobrescribir los archivos de entrada.",
                 parent=self,
             )
             return
@@ -436,41 +389,33 @@ class CryptoApp(tk.Tk):
         self._run_in_background(
             self.decrypt_button,
             "Descifrado completado",
-            lambda: self._decrypt(encrypted_file, key_file, private_key_file, output, password),
+            lambda: self._decrypt(encrypted_file, key_file, output),
         )
 
     def _decrypt(
         self,
         encrypted_file: Path,
         key_file: Path,
-        private_key_file: Path,
         output: Path,
-        password: str,
     ) -> str:
         try:
-            private_key = decrypt_private_key(private_key_file.read_bytes(), password)
+            destination = decrypt_external_file(
+                encrypted_file,
+                key_file,
+                self._require_private_key(),
+                output,
+            )
         except ValueError as exc:
             raise ValueError(
-                "No se pudo desbloquear la clave privada. La contraseña puede ser "
-                f"incorrecta o el archivo estar dañado. Detalle: {exc}"
+                "No se pudo descifrar el archivo. Comprueba que pertenezca a "
+                f"{self.username} y que no esté dañado. Detalle: {exc}"
             ) from exc
+        return f"Archivo descifrado correctamente:\n{destination}"
 
-        try:
-            aes_key = decrypt_with_private(key_file.read_bytes(), private_key)
-        except ValueError as exc:
-            raise ValueError(
-                "La clave AES seleccionada no corresponde a esta clave privada RSA."
-            ) from exc
-
-        output.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            decrypt_file(encrypted_file, output, aes_key)
-        except ValueError as exc:
-            raise ValueError(
-                "No se pudo verificar o descifrar el archivo. Puede estar dañado "
-                f"o no corresponder a la clave AES. Detalle: {exc}"
-            ) from exc
-        return f"Archivo descifrado correctamente:\n{output}"
+    def _require_private_key(self) -> RSA.RsaKey:
+        if self.private_key is None:
+            raise RuntimeError("La sesión ya no tiene una clave privada desbloqueada.")
+        return self.private_key
 
     def _run_in_background(
         self,
@@ -511,9 +456,178 @@ class CryptoApp(tk.Tk):
         else:
             messagebox.showerror("No se pudo completar la operación", message, parent=self)
 
+    def _close_app(self) -> None:
+        self.private_key = None
+        self.destroy()
+
+
+class AccountLoginDialog(tk.Tk):
+    def __init__(self) -> None:
+        super().__init__()
+        self.title("Iniciar sesión")
+        self.resizable(False, False)
+        self.session: AuthenticatedUser | None = None
+        self.username = tk.StringVar()
+        self.password = tk.StringVar()
+        self._build_ui()
+        self._refresh_users()
+        self.protocol("WM_DELETE_WINDOW", self._cancel)
+
+    def _build_ui(self) -> None:
+        frame = ttk.Frame(self, padding=20)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text="Selecciona tu usuario e inicia sesión").grid(
+            row=0, column=0, columnspan=2, sticky="w", pady=(0, 12)
+        )
+
+        ttk.Label(frame, text="Usuario").grid(row=1, column=0, sticky="w", pady=6)
+        self.user_selector = ttk.Combobox(
+            frame,
+            textvariable=self.username,
+            state="readonly",
+            width=28,
+        )
+        self.user_selector.grid(row=1, column=1, sticky="ew", padx=(12, 0), pady=6)
+
+        ttk.Label(frame, text="Contraseña").grid(row=2, column=0, sticky="w", pady=6)
+        password_entry = ttk.Entry(frame, textvariable=self.password, show="*")
+        password_entry.grid(row=2, column=1, sticky="ew", padx=(12, 0), pady=6)
+        password_entry.bind("<Return>", self._on_password_return)
+
+        buttons = ttk.Frame(frame)
+        buttons.grid(row=3, column=0, columnspan=2, sticky="e", pady=(14, 0))
+        ttk.Button(buttons, text="Crear usuario…", command=self._open_registration).pack(
+            side="left", padx=(0, 8)
+        )
+        self.login_button = ttk.Button(buttons, text="Iniciar sesión", command=self._login)
+        self.login_button.pack(side="left")
+        frame.columnconfigure(1, weight=1)
+        self.geometry("430x190")
+
+    def _on_password_return(self, _event: tk.Event) -> None:
+        _ = _event
+        self._login()
+
+    def _refresh_users(self, select: str | None = None) -> None:
+        users = list_users(DEFAULT_DATABASE_PATH)
+        self.user_selector.configure(values=users)
+        if select and select in users:
+            self.username.set(select)
+        elif users and self.username.get() not in users:
+            self.username.set(users[0])
+        elif not users:
+            self.username.set("")
+        self.login_button.configure(state="normal" if users else "disabled")
+
+    def _login(self) -> None:
+        username = self.username.get().strip()
+        password = self.password.get()
+        if not username or not password:
+            messagebox.showerror(
+                "Faltan datos",
+                "Selecciona un usuario e introduce su contraseña.",
+                parent=self,
+            )
+            return
+        try:
+            self.session = authenticate_user(username, password, DEFAULT_DATABASE_PATH)
+        except ValueError as exc:
+            self.password.set("")
+            messagebox.showerror("No se pudo iniciar sesión", str(exc), parent=self)
+            return
+        self.password.set("")
+        self.destroy()
+
+    def _open_registration(self) -> None:
+        RegistrationDialog(self, self._register_user)
+
+    def _register_user(self, username: str, password: str, confirmation: str) -> None:
+        if password != confirmation:
+            messagebox.showerror(
+                "Las contraseñas no coinciden",
+                "Vuelve a escribir ambas contraseñas.",
+                parent=self,
+            )
+            return
+        try:
+            register_user(username, password, DEFAULT_DATABASE_PATH)
+            self.session = authenticate_user(username, password, DEFAULT_DATABASE_PATH)
+        except ValueError as exc:
+            messagebox.showerror("No se pudo crear el usuario", str(exc), parent=self)
+            return
+        self.password.set("")
+        self.destroy()
+
+    def _cancel(self) -> None:
+        self.session = None
+        self.destroy()
+
+
+class RegistrationDialog(tk.Toplevel):
+    def __init__(
+        self,
+        parent: AccountLoginDialog,
+        on_register: Callable[[str, str, str], None],
+    ) -> None:
+        super().__init__(parent)
+        self.parent_dialog = parent
+        self.on_register = on_register
+        self.title("Crear usuario")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+
+        self.username = tk.StringVar()
+        self.password = tk.StringVar()
+        self.confirmation = tk.StringVar()
+        frame = ttk.Frame(self, padding=18)
+        frame.pack(fill="both", expand=True)
+        fields = (
+            ("Usuario", self.username, False),
+            ("Contraseña", self.password, True),
+            ("Repetir contraseña", self.confirmation, True),
+        )
+        for row, (label, variable, hidden) in enumerate(fields):
+            ttk.Label(frame, text=label).grid(row=row, column=0, sticky="w", pady=6)
+            ttk.Entry(
+                frame,
+                textvariable=variable,
+                show="*" if hidden else "",
+                width=30,
+            ).grid(row=row, column=1, sticky="ew", padx=(12, 0), pady=6)
+        ttk.Button(frame, text="Crear cuenta", command=self._submit).grid(
+            row=len(fields), column=0, columnspan=2, sticky="e", pady=(14, 0)
+        )
+        frame.columnconfigure(1, weight=1)
+        self.geometry("420x210")
+
+    def _submit(self) -> None:
+        username = self.username.get().strip()
+        password = self.password.get()
+        confirmation = self.confirmation.get()
+        if not username or not password or not confirmation:
+            messagebox.showerror(
+                "Faltan datos",
+                "Completa el usuario y los dos campos de contraseña.",
+                parent=self,
+            )
+            return
+        self.password.set("")
+        self.confirmation.set("")
+        self.on_register(username, password, confirmation)
+
 
 def main() -> None:
-    app = CryptoApp()
+    initialize_database(DEFAULT_DATABASE_PATH)
+    login = AccountLoginDialog()
+    login.mainloop()
+    session = login.session
+    login.session = None
+    del login
+    if session is None:
+        return
+    app = CryptoApp(session)
+    del session
     app.mainloop()
 
 

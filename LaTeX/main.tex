@@ -49,7 +49,7 @@ La aplicación está implementada en Python y cuenta con una interfaz de escrito
 
 La versión actual implementa un flujo local de cifrado y descifrado para archivos. Trabaja sobre bytes, por lo que puede cifrar imágenes, audio, vídeo y otros tipos de archivo; no se limita a una extensión concreta.
 
-La aplicación cuenta con un único par RSA local. No se han implementado todavía el alta y la autenticación de usuarios ni la compartición segura entre diferentes usuarios. Esas funciones pertenecen a la segunda fase del enunciado y se indican como trabajo futuro, no como funcionalidades terminadas.
+La aplicación gráfica permite crear cuentas locales y autenticar al usuario mediante la contraseña que desbloquea su clave privada RSA. Cada cuenta posee su propio par RSA y sus propios archivos. La compartición segura entre usuarios todavía no está implementada.
 
 \section{Tecnologías y dependencias}
 
@@ -102,7 +102,7 @@ RSA se utiliza para cifrar la clave AES, no el archivo completo. La clave públi
 
 \subsection{Protección de la clave privada RSA}
 
-La contraseña no se almacena. Para proteger la clave privada RSA:
+La contraseña de la cuenta se utiliza exclusivamente para proteger y desbloquear su clave privada RSA; no cifra directamente los archivos ni sus claves AES. La contraseña no se almacena. Para proteger la clave privada RSA:
 
 \begin{enumerate}
     \item Se genera un salt aleatorio de 16 bytes.
@@ -111,7 +111,7 @@ La contraseña no se almacena. Para proteger la clave privada RSA:
     \item Se conserva el salt junto con el nonce, la etiqueta de autenticación y el texto cifrado de la clave privada.
 \end{enumerate}
 
-El salt no es secreto. Permite repetir la derivación durante el descifrado. Una contraseña equivocada deriva otra clave y la verificación de GCM falla.
+El salt no es secreto. Permite repetir la derivación durante el descifrado. Una contraseña equivocada deriva otra clave y la verificación de GCM falla. Al iniciar sesión, la clave privada se desbloquea una vez y se conserva en memoria durante esa sesión; la interfaz no vuelve a solicitar la contraseña para cada operación.
 
 \section{Proceso de cifrado y descifrado}
 
@@ -120,11 +120,9 @@ El salt no es secreto. Permite repetir la derivación durante el descifrado. Una
 Desde la interfaz gráfica, el proceso es el siguiente:
 
 \begin{enumerate}
-    \item El usuario elige un archivo y proporciona la contraseña que protege la clave privada RSA.
-    \item Si SQLite ya contiene un par RSA, la aplicación intenta desbloquear la clave privada y comprueba que coincida con la pública.
-    \item Si la base de datos no contiene el par, la aplicación intenta importar los archivos de clave heredados de \texttt{data/}. Si no existen, genera un par nuevo. Si solo existe uno de los dos archivos heredados, la aplicación se detiene para evitar reemplazar un par incompleto.
-    \item Se genera una clave AES aleatoria para el archivo y se cifra su contenido con AES-GCM.
-    \item La clave AES se cifra con RSA-OAEP y la clave pública.
+    \item El usuario inicia sesión con su cuenta y desbloquea su clave privada RSA una vez.
+    \item Elige un archivo que se cifra con una clave AES aleatoria nueva y AES-GCM.
+    \item La clave AES se cifra con RSA-OAEP y la clave pública de la cuenta activa.
     \item El texto cifrado y la clave AES cifrada se guardan en SQLite junto con metadatos del archivo.
 \end{enumerate}
 
@@ -133,14 +131,13 @@ Desde la interfaz gráfica, el proceso es el siguiente:
 Para recuperar un registro desde la biblioteca SQLite:
 
 \begin{enumerate}
-    \item Se selecciona el archivo y se introduce la contraseña de la clave privada.
-    \item La aplicación deriva la clave AES de protección y verifica/descifra la clave privada RSA.
+    \item Se selecciona un registro de la cuenta autenticada. Su clave privada ya está desbloqueada en memoria.
     \item RSA descifra la clave AES asociada al registro.
     \item AES-GCM descifra y autentica el contenido.
     \item Solo tras superar la autenticación, se escribe el archivo en la ubicación elegida.
 \end{enumerate}
 
-La aplicación también mantiene una pestaña para descifrar los archivos externos \texttt{.enc} y \texttt{.key.enc} creados por el modo de línea de comandos. Esos archivos no se importan automáticamente a la biblioteca SQLite.
+La aplicación también mantiene una pestaña para descifrar archivos externos \texttt{.enc} y \texttt{.key.enc}. La clave AES debe haberse cifrado para la clave pública de la cuenta activa. Esos archivos no se importan automáticamente a la biblioteca SQLite.
 
 \section{Base de datos SQLite}
 
@@ -154,20 +151,22 @@ La interfaz crea automáticamente la base de datos local \texttt{secure\_storage
 \toprule
 \textbf{Tabla} & \textbf{Campos principales} & \textbf{Contenido y propósito}\\
 \midrule
-\texttt{keypairs} &
-\texttt{id}, \texttt{public\_key}, \texttt{encrypted\_private\_key}, \texttt{created\_at} &
-Almacena un único par RSA local. La clave privada está cifrada con AES-GCM; la contraseña no se guarda.\\
+\texttt{users} &
+\texttt{id}, \texttt{username}, \texttt{public\_key}, \texttt{encrypted\_private\_key}, \texttt{created\_at} &
+Almacena una cuenta y su par RSA. La clave privada está cifrada con AES-GCM; la contraseña no se guarda.\\
 \addlinespace
 \texttt{encrypted\_files} &
-\texttt{id}, \texttt{original\_name}, \texttt{encrypted\_content}, \texttt{encrypted\_aes\_key}, \texttt{keypair\_id}, \texttt{created\_at}, \texttt{size\_bytes} &
-Almacena el contenido cifrado y la clave AES cifrada como BLOB, además de un identificador y metadatos.\\
+\texttt{id}, \texttt{owner\_id}, \texttt{original\_name}, \texttt{encrypted\_content}, \texttt{encrypted\_aes\_key}, \texttt{created\_at}, \texttt{size\_bytes} &
+Almacena el propietario, el contenido cifrado y la clave AES cifrada como BLOB, además de metadatos.\\
 \bottomrule
 \end{tabular}
 \end{center}
 
-Las relaciones se protegen con claves foráneas de SQLite. Las consultas que insertan datos usan parámetros SQL, y las escrituras se realizan en transacciones.
+Las relaciones se protegen con claves foráneas de SQLite. Las consultas que insertan datos usan parámetros SQL, y las escrituras se realizan en transacciones. La biblioteca filtra por el identificador del usuario autenticado.
 
 El contenido original y la clave AES en claro no se guardan en la base de datos. Sin embargo, SQLite no cifra automáticamente el fichero completo: los nombres, tamaños y fechas se conservan como metadatos legibles, y el archivo de base de datos debe mantenerse en un lugar protegido. Los archivos se leen y cifran íntegramente en memoria, por lo que esta primera versión está orientada a archivos de tamaño moderado.
+
+Al abrir una base de datos de la versión anterior, el antiguo par RSA y sus archivos se migran a una cuenta local llamada \texttt{usuario}. Para iniciar sesión en esa cuenta se necesita la contraseña que protegía el par anterior.
 
 \section{Interfaz y manual de usuario}
 
@@ -196,22 +195,23 @@ python main.py
 
 \subsection{Pestaña «Cifrar»}
 
+Al abrir la aplicación, se elige una cuenta y se introduce su contraseña. Si todavía no hay cuentas, se puede crear una; durante el alta se genera un par RSA propio y se protege la clave privada con la contraseña elegida.
+
 \begin{enumerate}
     \item Seleccionar el archivo original con el botón de exploración.
-    \item Escribir la contraseña que protege la clave privada RSA.
     \item Pulsar \textbf{Cifrar y guardar en SQLite}.
-    \item La aplicación informa del identificador del registro guardado.
+    \item La aplicación cifra para la cuenta activa e informa del identificador del registro guardado.
 \end{enumerate}
 
 El contenido cifrado y las claves se guardan en la base de datos local. No se genera un archivo cifrado externo en este flujo gráfico.
 
 \subsection{Pestaña «Biblioteca SQLite»}
 
-La biblioteca muestra el identificador, nombre original, fecha de almacenamiento y tamaño de los registros cifrados. Se puede actualizar la lista y elegir un registro para descifrarlo. El usuario introduce la contraseña de la clave RSA y selecciona el destino para el archivo recuperado. La interfaz confirma antes de sobrescribir un destino que ya exista.
+La biblioteca muestra el identificador, nombre original, fecha de almacenamiento y tamaño de los registros de la cuenta activa. Se puede actualizar la lista y elegir un registro para descifrarlo. La clave privada desbloqueada al iniciar sesión recupera el archivo; solo hay que seleccionar el destino. La interfaz confirma antes de sobrescribir un destino que ya exista.
 
 \subsection{Pestaña «Descifrar»}
 
-Esta pestaña sirve para el formato externo de línea de comandos. Se eligen el archivo cifrado, su clave AES cifrada \texttt{.key.enc}, la clave privada RSA protegida, la contraseña correspondiente y la ruta de salida.
+Esta pestaña sirve para archivos externos. Se eligen el archivo cifrado, su clave AES cifrada \texttt{.key.enc} y la ruta de salida. Se utiliza la clave privada de la cuenta activa y no se vuelve a pedir la contraseña. El modo de línea de comandos es independiente y recibe \texttt{--password} en cada ejecución; solo sus archivos cifrados con la clave pública de la cuenta activa se pueden abrir desde esta pestaña.
 
 \section{Uso desde la línea de comandos}
 
@@ -247,9 +247,10 @@ La suite \texttt{tests/test\_file\_service.py} contiene pruebas automatizadas pa
 
 \begin{itemize}
     \item Cifrar un archivo, persistir el contenido y recuperar bytes idénticos al original.
-    \item Importar a SQLite un par RSA previo y utilizarlo para un ciclo completo.
-    \item Rechazar una contraseña incorrecta sin crear un archivo de salida en claro.
-    \item Evitar añadir un nuevo registro cuando la contraseña no desbloquea el par RSA existente.
+    \item Crear cuentas, desbloquear sus claves privadas y rechazar contraseñas incorrectas.
+    \item Aislar los archivos de cada usuario y evitar que otra cuenta los descifre.
+    \item Migrar el esquema anterior de un solo par RSA conservando los archivos cifrados.
+    \item Rechazar nombres de usuario duplicados.
 \end{itemize}
 
 Además, se ha comprobado manualmente la inicialización de la ventana Tkinter con la pestaña de biblioteca SQLite y se ha validado que el flujo de línea de comandos de cifrado/descifrado sigue siendo compatible con ficheros externos.
@@ -268,14 +269,11 @@ Además, se ha comprobado manualmente la inicialización de la ventana Tkinter c
 
 \subsection{Estado respecto al enunciado}
 
-La primera fase está implementada a nivel local: cifrado AES-128 por archivo, envoltura RSA de la clave AES, protección de la clave privada y persistencia SQLite en la interfaz. La aplicación también ofrece una interfaz Tkinter y un flujo por consola.
+La primera fase está implementada a nivel local: cifrado AES-128 por archivo, envoltura RSA de la clave AES, protección de la clave privada, cuentas locales con inicio de sesión y persistencia SQLite en la interfaz. La aplicación también ofrece un flujo por consola independiente.
 
 Queda pendiente la segunda fase del enunciado:
 
 \begin{enumerate}
-    \item Alta de usuarios con credenciales y un par RSA independiente por usuario.
-    \item Autenticación sin almacenar contraseñas en claro.
-    \item Asociación de cada archivo con su propietario y permisos.
     \item Compartición segura, cifrando la clave AES del archivo con la clave pública del destinatario y registrando el permiso correspondiente.
 \end{enumerate}
 
