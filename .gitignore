@@ -16,7 +16,6 @@ Thumbs.db
 !.env.example
 
 # User files, encrypted outputs, and cryptographic key material
-/data/
 /media/
 *.enc
 *.pem

@@ -155,7 +155,7 @@ python decrypt.py \
 
 ## Para convertir ejecutable
 
-Sí. Para generar un **`.exe` de Windows**, usa **PyInstaller desde Windows**, no desde WSL. La versión que genera PyInstaller depende del sistema donde se ejecuta: desde WSL producirías un ejecutable Linux, no un `.exe` de Windows.
+Para generar un **`.exe` de Windows**, usa **PyInstaller desde Windows**, no desde WSL. La versión que genera PyInstaller depende del sistema donde se ejecuta: desde WSL producirías un ejecutable Linux, no un `.exe` de Windows.
 
 La capa de base de datos ya usa `data/secure_storage.sqlite3` durante el desarrollo y `%LOCALAPPDATA%\CS2026\secure_storage.sqlite3` cuando se ejecuta empaquetada. Crea la carpeta de destino si todavía no existe.
 
