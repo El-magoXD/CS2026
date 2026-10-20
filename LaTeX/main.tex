@@ -17,9 +17,25 @@
 \setlength{\parskip}{0.45em}
 \setlength{\parindent}{0pt}
 
-\title{Servicio seguro de almacenamiento de archivos multimedia\\
-\large Memoria de implementación -- primera fase}
-\author{Integrantes: \textit{completar}}
+\title{Compresión y Seguridad: Práctica 1\\
+\large Memoria de implementación -- Primera fase}
+\author{
+  Pedro González Sánchez \\
+  Universidad de Alicante \\
+  \texttt{pgs96@alu.ua.es}
+  \and
+  Rafael Verdeguer Mora \\
+  Universidad de Alicante \\
+  \texttt{rvm57@alu.ua.es}
+  \and
+  Aitor García Gómez \\
+  Universidad de Alicante \\
+  \texttt{agg437@alu.ua.es}
+  \and
+  Carlos Bravo Jiménez \\
+  Universidad de Alicante \\
+  \texttt{cbj13@alu.ua.es}
+}
 \date{Curso 2026--2027}
 
 \begin{document}
@@ -28,6 +44,8 @@
 \begin{abstract}
 Este trabajo implementa una aplicación de escritorio para cifrar y recuperar archivos mediante un esquema híbrido AES y RSA. Cada archivo se cifra con una clave AES-128 aleatoria en modo GCM; la clave AES se cifra con RSA-OAEP y la clave privada RSA se protege con AES-GCM mediante una clave derivada de una contraseña. La aplicación gráfica permite almacenar y consultar el contenido cifrado y las claves protegidas en una base de datos SQLite local. Esta memoria describe la arquitectura implementada, las decisiones de almacenamiento, el uso de la aplicación, las comprobaciones realizadas y las funcionalidades que quedan pendientes respecto a la segunda fase del enunciado.
 \end{abstract}
+
+\newpage
 
 \tableofcontents
 \newpage
