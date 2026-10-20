@@ -17,7 +17,13 @@ Thumbs.db
 
 # User files, encrypted outputs, and cryptographic key material
 /media/
+/build/
+/dist/
+/data/
+*.sqlite3
+*.spec
 *.enc
 *.pem
 *.key
 *.psw
+*.exe
