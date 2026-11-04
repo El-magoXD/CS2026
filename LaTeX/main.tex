@@ -117,8 +117,6 @@ El proyecto se organiza en módulos para evitar mezclar la interfaz y las consul
     Secreto introducido por el usuario. No se guarda ni se utiliza directamente como clave AES. Se usa como entrada de PBKDF2 para derivar la clave que protege exclusivamente la clave privada RSA.
     \item[Clave derivada de protección ($K_P$)]
     Clave AES-128 obtenida de la contraseña y un salt mediante PBKDF2-HMAC-SHA256. Cifra o descifra la clave privada RSA.
-    \item[``Clave de login'']
-    No existe una clave independiente con ese nombre en el esquema actual. La contraseña verifica la sesión al permitir autenticar el contenido AES-GCM de la clave privada protegida. No se almacena un hash de contraseña separado.
     \item[Salt ($s$)]
     Valor aleatorio no secreto de 16 bytes que PBKDF2 necesita para volver a derivar $K_P$.
     \item[Nonce ($N$) y etiqueta ($T$)]
