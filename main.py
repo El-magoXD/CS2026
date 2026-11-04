@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import queue
+import subprocess
+import sys
 import threading
 import tkinter as tk
 from collections.abc import Callable
@@ -23,6 +26,23 @@ from services.file_service import (
 )
 
 
+def open_file_with_default_application(path: Path) -> None:
+    if not path.is_file():
+        raise FileNotFoundError(f"No existe el archivo descifrado: {path}")
+
+    if sys.platform == "win32":
+        startfile = getattr(os, "startfile", None)
+        if startfile is None:
+            raise RuntimeError("No está disponible el visor predeterminado de Windows.")
+        startfile(str(path))
+    elif sys.platform == "darwin":
+        subprocess.Popen(["open", str(path)])
+    elif sys.platform.startswith("linux"):
+        subprocess.Popen(["xdg-open", str(path)])
+    else:
+        raise RuntimeError(f"No se pueden abrir archivos en la plataforma {sys.platform}.")
+
+
 class CryptoApp(tk.Tk):
     def __init__(self, session: AuthenticatedUser) -> None:
         super().__init__()
@@ -35,7 +55,7 @@ class CryptoApp(tk.Tk):
         initialize_database(DEFAULT_DATABASE_PATH)
         self.protocol("WM_DELETE_WINDOW", self._close_app)
 
-        self.results: queue.Queue[tuple[bool, str, str]] = queue.Queue()
+        self.results: queue.Queue[tuple[bool, str, str, Path | None]] = queue.Queue()
         self.active_button: ttk.Button | None = None
 
         self.encrypt_input = tk.StringVar()
@@ -338,6 +358,7 @@ class CryptoApp(tk.Tk):
             self.decrypt_stored_button,
             "Descifrado completado",
             lambda: self._decrypt_database_file(file_id, destination),
+            open_after_success=destination,
         )
 
     def _decrypt_database_file(self, file_id: int, output: Path) -> str:
@@ -390,6 +411,7 @@ class CryptoApp(tk.Tk):
             self.decrypt_button,
             "Descifrado completado",
             lambda: self._decrypt(encrypted_file, key_file, output),
+            open_after_success=output,
         )
 
     def _decrypt(
@@ -422,6 +444,7 @@ class CryptoApp(tk.Tk):
         button: ttk.Button,
         success_title: str,
         operation: Callable[[], str],
+        open_after_success: Path | None = None,
     ) -> None:
         self.active_button = button
         button.configure(state="disabled")
@@ -431,16 +454,18 @@ class CryptoApp(tk.Tk):
             try:
                 result = operation()
             except Exception as exc:
-                self.results.put((False, f"{type(exc).__name__}: {exc}", success_title))
+                self.results.put(
+                    (False, f"{type(exc).__name__}: {exc}", success_title, None)
+                )
             else:
-                self.results.put((True, result, success_title))
+                self.results.put((True, result, success_title, open_after_success))
 
         threading.Thread(target=worker, daemon=True).start()
         self.after(100, self._poll_results)
 
     def _poll_results(self) -> None:
         try:
-            succeeded, message, title = self.results.get_nowait()
+            succeeded, message, title, open_after_success = self.results.get_nowait()
         except queue.Empty:
             self.after(100, self._poll_results)
             return
@@ -452,7 +477,23 @@ class CryptoApp(tk.Tk):
         if succeeded:
             if title == "Cifrado guardado en SQLite":
                 self._refresh_library()
-            messagebox.showinfo(title, message, parent=self)
+            if open_after_success is not None:
+                should_open = messagebox.askyesno(
+                    title,
+                    f"{message}\n\n¿Quieres abrir el archivo con la aplicación predeterminada?",
+                    parent=self,
+                )
+                if should_open:
+                    try:
+                        open_file_with_default_application(open_after_success)
+                    except (OSError, RuntimeError) as exc:
+                        messagebox.showerror(
+                            "No se pudo abrir el archivo",
+                            str(exc),
+                            parent=self,
+                        )
+            else:
+                messagebox.showinfo(title, message, parent=self)
         else:
             messagebox.showerror("No se pudo completar la operación", message, parent=self)
 

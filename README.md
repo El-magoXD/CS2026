@@ -100,7 +100,7 @@ La ventana principal tiene tres pestañas:
 - **Biblioteca SQLite:** muestra los archivos de la cuenta activa y permite descifrar una selección eligiendo la ruta de salida. Usa la clave privada desbloqueada durante el inicio de sesión.
 - **Descifrar:** descifra archivos externos `.enc` y `.key.enc` con la clave privada de la cuenta activa, sin pedir de nuevo la contraseña. La clave `.key.enc` debe haberse cifrado con la clave pública de esa cuenta.
 
-La interfaz pide confirmación antes de reemplazar archivos existentes y muestra el resultado o el error de la operación.
+La interfaz pide confirmación antes de reemplazar archivos existentes y muestra el resultado o el error de la operación. Al descifrar, ofrece abrir el archivo recuperado con la aplicación predeterminada del sistema; solo lo abre si el usuario confirma.
 
 Los archivos cifrados que ya existían como `.enc` y `.key.enc` no se importan automáticamente a la biblioteca. Se pueden abrir desde la pestaña **Descifrar** si su clave AES se cifró para la clave pública de la cuenta activa.
 

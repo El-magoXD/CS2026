@@ -104,6 +104,27 @@ El proyecto se organiza en módulos para evitar mezclar la interfaz y las consul
 
 \section{Diseño criptográfico}
 
+\subsection{Glosario de claves y parámetros}
+
+\begin{description}[style=nextline,leftmargin=0pt]
+    \item[Clave de archivo o clave de datos ($K_F$)]
+    Clave AES-128 aleatoria e independiente para cada archivo. En esta implementación, ``clave de archivo'' y ``clave de datos'' son dos nombres para la misma clave; no se genera una segunda clave por archivo.
+    \item[Clave pública RSA ($(n,e)$)]
+    Parte pública del par de cada usuario. Se utiliza para cifrar con RSA-OAEP la clave de archivo.
+    \item[Clave privada RSA ($(n,d)$)]
+    Parte secreta del par. Se almacena cifrada con AES-GCM en SQLite y se desbloquea al iniciar sesión.
+    \item[Contraseña de inicio de sesión ($P$)]
+    Secreto introducido por el usuario. No se guarda ni se utiliza directamente como clave AES. Se usa como entrada de PBKDF2 para derivar la clave que protege exclusivamente la clave privada RSA.
+    \item[Clave derivada de protección ($K_P$)]
+    Clave AES-128 obtenida de la contraseña y un salt mediante PBKDF2-HMAC-SHA256. Cifra o descifra la clave privada RSA.
+    \item[``Clave de login'']
+    No existe una clave independiente con ese nombre en el esquema actual. La contraseña verifica la sesión al permitir autenticar el contenido AES-GCM de la clave privada protegida. No se almacena un hash de contraseña separado.
+    \item[Salt ($s$)]
+    Valor aleatorio no secreto de 16 bytes que PBKDF2 necesita para volver a derivar $K_P$.
+    \item[Nonce ($N$) y etiqueta ($T$)]
+    El nonce es el valor de una sola utilización requerido por GCM; la etiqueta permite comprobar autenticidad e integridad antes de aceptar el texto descifrado.
+\end{description}
+
 \subsection{Cifrado de cada archivo}
 
 Para cada archivo nuevo, la aplicación genera una clave aleatoria de 16 bytes:
@@ -131,6 +152,57 @@ La contraseña de la cuenta se utiliza exclusivamente para proteger y desbloquea
 
 El salt no es secreto. Permite repetir la derivación durante el descifrado. Una contraseña equivocada deriva otra clave y la verificación de GCM falla. Al iniciar sesión, la clave privada se desbloquea una vez y se conserva en memoria durante esa sesión; la interfaz no vuelve a solicitar la contraseña para cada operación.
 
+\subsection{Descripción matemática del flujo}
+
+Sean $M$ los bytes del archivo original, $u$ el usuario, y $(n,e)$ y $(n,d)$ el par RSA de 2048 bits de dicho usuario, donde $n=pq$ y $ed\equiv 1 \pmod{\varphi(n)}$.
+
+\paragraph{Cifrado del archivo.}
+Se genera una clave de archivo uniforme mediante el generador criptográfico:
+\[
+K_F \xleftarrow{\text{aleatoria}} \{0,1\}^{128}.
+\]
+AES-GCM cifra el contenido con un nonce $N_F$:
+\[
+(C_F,T_F)=\operatorname{GCM.Enc}_{K_F}(N_F,M),
+\]
+donde $C_F$ es el texto cifrado y $T_F$ es la etiqueta de autenticación. La aplicación almacena en SQLite $N_F\parallel T_F\parallel C_F$.
+
+\paragraph{Cifrado de la clave de archivo.}
+RSA-OAEP codifica la clave simétrica con aleatoriedad nueva. Si $\operatorname{OAEP.Enc}_{(n,e)}$ representa RSA-OAEP con la clave pública:
+\[
+W_F=\operatorname{OAEP.Enc}_{(n,e)}(K_F).
+\]
+Se almacena $W_F$ junto con el contenido cifrado. En la operación RSA subyacente, OAEP transforma el mensaje en un entero $m$ y se calcula $c=m^e\bmod n$; el relleno OAEP es parte esencial del esquema, por lo que no se aplica RSA directamente a los bytes del archivo.
+
+\paragraph{Protección de la clave privada.}
+Para la contraseña $P$, el salt $s$ y $c_{\mathrm{KDF}}=200\,000$ iteraciones:
+\[
+K_P=\operatorname{PBKDF2\text{-}HMAC\text{-}SHA256}
+    (P,s,c_{\mathrm{KDF}},16).
+\]
+La clave privada serializada en formato DER se cifra con AES-128-GCM:
+\[
+(C_P,T_P)=\operatorname{GCM.Enc}_{K_P}(N_P,\operatorname{DER}(sk_u)).
+\]
+La base de datos guarda la clave privada protegida como
+$s\parallel N_P\parallel T_P\parallel C_P$. No almacena $P$ ni $K_P$.
+
+\paragraph{Inicio de sesión y descifrado del archivo.}
+Al iniciar sesión, la aplicación lee $s,N_P,T_P,C_P$, deriva $K_P$ con la contraseña suministrada e intenta verificar y descifrar:
+\[
+\operatorname{DER}(sk_u)=
+\operatorname{GCM.Dec}_{K_P}(N_P,C_P,T_P).
+\]
+La sesión solo se acepta si la etiqueta $T_P$ es válida y la clave recuperada corresponde a la clave pública del usuario. A continuación, RSA-OAEP recupera la clave de archivo:
+\[
+K_F=\operatorname{OAEP.Dec}_{(n,d)}(W_F).
+\]
+Por último, AES-GCM autentica y descifra el contenido:
+\[
+M=\operatorname{GCM.Dec}_{K_F}(N_F,C_F,T_F).
+\]
+La salida solo se acepta si la etiqueta $T_F$ es válida. Una contraseña incorrecta, una clave no correspondiente o una modificación del contenido producen un error de autenticación y no deben generar una salida válida.
+
 \section{Proceso de cifrado y descifrado}
 
 \subsection{Cifrado}
@@ -153,6 +225,7 @@ Para recuperar un registro desde la biblioteca SQLite:
     \item RSA descifra la clave AES asociada al registro.
     \item AES-GCM descifra y autentica el contenido.
     \item Solo tras superar la autenticación, se escribe el archivo en la ubicación elegida.
+    \item La interfaz pregunta si se desea abrir el archivo con la aplicación predeterminada del sistema.
 \end{enumerate}
 
 La aplicación también mantiene una pestaña para descifrar archivos externos \texttt{.enc} y \texttt{.key.enc}. La clave AES debe haberse cifrado para la clave pública de la cuenta activa. Esos archivos no se importan automáticamente a la biblioteca SQLite.
@@ -225,11 +298,11 @@ El contenido cifrado y las claves se guardan en la base de datos local. No se ge
 
 \subsection{Pestaña «Biblioteca SQLite»}
 
-La biblioteca muestra el identificador, nombre original, fecha de almacenamiento y tamaño de los registros de la cuenta activa. Se puede actualizar la lista y elegir un registro para descifrarlo. La clave privada desbloqueada al iniciar sesión recupera el archivo; solo hay que seleccionar el destino. La interfaz confirma antes de sobrescribir un destino que ya exista.
+La biblioteca muestra el identificador, nombre original, fecha de almacenamiento y tamaño de los registros de la cuenta activa. Se puede actualizar la lista y elegir un registro para descifrarlo. La clave privada desbloqueada al iniciar sesión recupera el archivo; solo hay que seleccionar el destino. La interfaz confirma antes de sobrescribir un destino que ya exista y, al terminar, pregunta si se desea abrir el archivo.
 
 \subsection{Pestaña «Descifrar»}
 
-Esta pestaña sirve para archivos externos. Se eligen el archivo cifrado, su clave AES cifrada \texttt{.key.enc} y la ruta de salida. Se utiliza la clave privada de la cuenta activa y no se vuelve a pedir la contraseña. El modo de línea de comandos es independiente y recibe \texttt{--password} en cada ejecución; solo sus archivos cifrados con la clave pública de la cuenta activa se pueden abrir desde esta pestaña.
+Esta pestaña sirve para archivos externos. Se eligen el archivo cifrado, su clave AES cifrada \texttt{.key.enc} y la ruta de salida. Se utiliza la clave privada de la cuenta activa y no se vuelve a pedir la contraseña. Al terminar, la interfaz pregunta si se desea abrir el archivo descifrado. El modo de línea de comandos es independiente y recibe \texttt{--password} en cada ejecución.
 
 \section{Uso desde la línea de comandos}
 
@@ -270,6 +343,8 @@ La suite \texttt{tests/test\_file\_service.py} contiene pruebas automatizadas pa
     \item Migrar el esquema anterior de un solo par RSA conservando los archivos cifrados.
     \item Rechazar nombres de usuario duplicados.
 \end{itemize}
+
+La suite \texttt{tests/test\_open\_file.py} comprueba que la apertura utiliza el lanzador predeterminado del sistema sin invocar una shell y que no se intenta abrir una ruta inexistente.
 
 Además, se ha comprobado manualmente la inicialización de la ventana Tkinter con la pestaña de biblioteca SQLite y se ha validado que el flujo de línea de comandos de cifrado/descifrado sigue siendo compatible con ficheros externos.
 

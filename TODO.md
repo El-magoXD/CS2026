@@ -1,8 +1,8 @@
 # TO-DO LIST
 ### Corregir parte 1
-- [ ] Hacer que abra el directorio y archivo al desencriptar
-- [ ] Apartado gloario de clave (clave de archvio, clave pribvada, clave de datos, clave de login, )
-- [ ] Explicar Proceso de cifrado y descifrado matemáticamente
+- [x] Abrir el archivo descifrado con la aplicación predeterminada (con confirmación)
+- [x] Añadir un glosario de claves: clave de archivo/datos, clave privada y contraseña de inicio de sesión
+- [x] Explicar matemáticamente el proceso de cifrado y descifrado
 
 ### Para la parte 2
 
