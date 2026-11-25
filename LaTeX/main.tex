@@ -42,7 +42,7 @@
 \maketitle
 
 \begin{abstract}
-Este trabajo implementa una aplicación de escritorio para cifrar y recuperar archivos mediante un esquema híbrido AES y RSA. Cada archivo se cifra con una clave AES-128 aleatoria en modo GCM; la clave AES se cifra con RSA-OAEP y la clave privada RSA se protege con AES-GCM mediante una clave derivada de una contraseña. La aplicación gráfica permite almacenar y consultar el contenido cifrado y las claves protegidas en una base de datos SQLite local. Esta memoria describe la arquitectura implementada, las decisiones de almacenamiento, el uso de la aplicación, las comprobaciones realizadas y las funcionalidades que quedan pendientes respecto a la segunda fase del enunciado.
+Este trabajo implementa una aplicación de escritorio y una API para registrar usuarios, cifrar archivos multimedia y compartirlos. Cada archivo se cifra con una clave AES-128 aleatoria en modo GCM; RSA-OAEP protege esa clave, y la clave privada RSA se protege con AES-GCM mediante una clave derivada de la contraseña. El cliente cifra y descifra localmente, mientras que una API FastAPI almacena el contenido cifrado en SQLite durante el desarrollo o en MariaDB/MySQL para el despliegue. Esta memoria describe ambas fases, la arquitectura, los controles de acceso, el uso y las comprobaciones realizadas.
 \end{abstract}
 
 \newpage
@@ -58,25 +58,27 @@ El objetivo de la primera fase es proteger archivos multimedia con una clave sim
     \item AES-128-GCM protege el contenido de cada archivo y permite detectar alteraciones.
     \item RSA-OAEP protege la clave AES aleatoria asociada a ese archivo.
     \item AES-128-GCM, con una clave derivada de la contraseña, protege la clave privada RSA.
-    \item SQLite conserva el contenido cifrado y el material criptográfico protegido de la aplicación gráfica.
+    \item Una API HTTPS autentica las peticiones y conserva los archivos cifrados, las claves protegidas y las relaciones de compartición en una base de datos.
 \end{itemize}
 
-La aplicación está implementada en Python y cuenta con una interfaz de escritorio en Tkinter. El diseño separa la interfaz, la criptografía, el almacenamiento y los servicios que conectan esas piezas.
+La aplicación está implementada en Python y cuenta con una interfaz de escritorio en Tkinter. El cliente se comunica con la API mediante HTTPS; el servidor puede usar MariaDB/MySQL y, para el desarrollo local, SQLite.
 
 \section{Alcance del trabajo}
 
-La versión actual implementa un flujo local de cifrado y descifrado para archivos. Trabaja sobre bytes, por lo que puede cifrar imágenes, audio, vídeo y otros tipos de archivo; no se limita a una extensión concreta.
+La aplicación trabaja sobre bytes, por lo que puede cifrar imágenes, audio, vídeo y otros tipos de archivo. El contenido se cifra en el cliente antes de enviarlo al servidor.
 
-La aplicación gráfica permite crear cuentas locales y autenticar al usuario mediante la contraseña que desbloquea su clave privada RSA. Cada cuenta posee su propio par RSA y sus propios archivos. La compartición segura entre usuarios todavía no está implementada.
+La aplicación permite registrar cuentas, iniciar sesión, cifrar y descifrar archivos propios, y compartirlos con otros usuarios. Cada cuenta tiene un par RSA. Al compartir, el cliente del propietario descifra localmente la clave AES y vuelve a cifrarla para la clave pública RSA del destinatario.
 
 \section{Tecnologías y dependencias}
 
 \begin{itemize}
     \item \textbf{Python 3.9 o posterior}: lenguaje de implementación.
-    \item \textbf{PyCryptodome}: implementación de AES, RSA y generación de bytes aleatorios criptográficamente seguros. La dependencia del proyecto está declarada en \texttt{requirements.txt}.
+    \item \textbf{PyCryptodome}: implementación de AES, RSA y generación de bytes aleatorios criptográficamente seguros.
     \item \textbf{Tkinter}: interfaz gráfica, mediante la biblioteca estándar de Python.
-    \item \textbf{SQLite}: base de datos local, mediante el módulo \texttt{sqlite3} de la biblioteca estándar; no requiere un servidor independiente.
-    \item \textbf{unittest}: pruebas automatizadas de la capa de almacenamiento y del flujo criptográfico.
+    \item \textbf{FastAPI y Uvicorn}: API HTTP de la aplicación y servidor ASGI.
+    \item \textbf{SQLAlchemy y PyMySQL}: persistencia relacional; SQLite se usa en local y MariaDB/MySQL en el servidor.
+    \item \textbf{HTTPX}: comunicación del cliente con la API.
+    \item \textbf{unittest}: pruebas de autenticación, permisos, cifrado y compartición.
 \end{itemize}
 
 La interfaz gráfica también requiere que Tkinter esté instalado en el intérprete de Python. Algunas distribuciones de Linux ofrecen Tkinter como paquete del sistema separado.
@@ -92,12 +94,16 @@ El proyecto se organiza en módulos para evitar mezclar la interfaz y las consul
     Genera un par RSA de 2048 bits y cifra o descifra claves simétricas con RSA-OAEP.
     \item[\texttt{crypto/passwords.py}]
     Deriva claves desde contraseñas con PBKDF2-HMAC-SHA256 y protege o recupera la clave privada RSA.
-    \item[\texttt{database/database.py}]
-    Inicializa el esquema SQLite y proporciona operaciones de lectura y escritura parametrizadas.
-    \item[\texttt{services/file\_service.py}]
-    Coordina cifrado, RSA y persistencia en la base de datos, sin depender de los widgets de Tkinter.
+    \item[\texttt{api/main.py} y \texttt{api/models.py}]
+    Implementan la API, sus endpoints, las sesiones y los modelos de cuentas, archivos y comparticiones.
+    \item[\texttt{api/database.py}]
+    Configura SQLAlchemy para SQLite local o MariaDB/MySQL mediante \texttt{CS2026\_DATABASE\_URL}.
+    \item[\texttt{api/client.py}]
+    Registra y autentica usuarios, cifra y descifra archivos en el cliente y vuelve a envolver claves AES para compartir.
+    \item[\texttt{database/database.py} y \texttt{services/file\_service.py}]
+    Conservan la persistencia SQLite de la versión local anterior; la interfaz actual usa la API.
     \item[\texttt{main.py}]
-    Crea la interfaz gráfica, valida la selección de archivos y solicita al servicio las operaciones.
+    Crea la interfaz gráfica para iniciar sesión, cifrar, descifrar y compartir archivos.
     \item[\texttt{encrypt.py} y \texttt{decrypt.py}]
     Conservan un flujo alternativo de línea de comandos que guarda el contenido cifrado como archivos externos.
 \end{description}
@@ -112,9 +118,9 @@ El proyecto se organiza en módulos para evitar mezclar la interfaz y las consul
     \item[Clave pública RSA ($(n,e)$)]
     Parte pública del par de cada usuario. Se utiliza para cifrar con RSA-OAEP la clave de archivo.
     \item[Clave privada RSA ($(n,d)$)]
-    Parte secreta del par. Se almacena cifrada con AES-GCM en SQLite y se desbloquea al iniciar sesión.
+    Parte secreta del par. Se almacena cifrada con AES-GCM en el servidor y se desbloquea en el cliente al iniciar sesión.
     \item[Contraseña de inicio de sesión ($P$)]
-    Secreto introducido por el usuario. No se guarda ni se utiliza directamente como clave AES. Se usa como entrada de PBKDF2 para derivar la clave que protege exclusivamente la clave privada RSA.
+    Secreto introducido por el usuario. No se guarda en claro ni se utiliza directamente como clave AES. La API guarda un verificador scrypt; el cliente usa la contraseña como entrada de PBKDF2 para proteger exclusivamente la clave privada RSA.
     \item[Clave derivada de protección ($K_P$)]
     Clave AES-128 obtenida de la contraseña y un salt mediante PBKDF2-HMAC-SHA256. Cifra o descifra la clave privada RSA.
     \item[Salt ($s$)]
@@ -139,7 +145,7 @@ RSA se utiliza para cifrar la clave AES, no el archivo completo. La clave públi
 
 \subsection{Protección de la clave privada RSA}
 
-La contraseña de la cuenta se utiliza exclusivamente para proteger y desbloquear su clave privada RSA; no cifra directamente los archivos ni sus claves AES. La contraseña no se almacena. Para proteger la clave privada RSA:
+La contraseña de la cuenta se utiliza exclusivamente para proteger y desbloquear su clave privada RSA; no cifra directamente los archivos ni sus claves AES. El cliente envía la contraseña a la API mediante HTTPS para la autenticación; el servidor almacena un verificador scrypt con salt, no la contraseña en claro. Para proteger la clave privada RSA:
 
 \begin{enumerate}
     \item Se genera un salt aleatorio de 16 bytes.
@@ -163,7 +169,7 @@ AES-GCM cifra el contenido con un nonce $N_F$:
 \[
 (C_F,T_F)=\operatorname{GCM.Enc}_{K_F}(N_F,M),
 \]
-donde $C_F$ es el texto cifrado y $T_F$ es la etiqueta de autenticación. La aplicación almacena en SQLite $N_F\parallel T_F\parallel C_F$.
+donde $C_F$ es el texto cifrado y $T_F$ es la etiqueta de autenticación. El cliente envía al servidor $N_F\parallel T_F\parallel C_F$.
 
 \paragraph{Cifrado de la clave de archivo.}
 RSA-OAEP codifica la clave simétrica con aleatoriedad nueva. Si $\operatorname{OAEP.Enc}_{(n,e)}$ representa RSA-OAEP con la clave pública:
@@ -201,6 +207,18 @@ M=\operatorname{GCM.Dec}_{K_F}(N_F,C_F,T_F).
 \]
 La salida solo se acepta si la etiqueta $T_F$ es válida. Una contraseña incorrecta, una clave no correspondiente o una modificación del contenido producen un error de autenticación y no deben generar una salida válida.
 
+\subsection{Compartición entre usuarios}
+
+Sean $u$ el propietario, $v$ el destinatario y $K_F$ la clave AES del archivo. El cliente del propietario recupera $K_F$ usando su clave privada y la vuelve a cifrar con la clave pública de $v$:
+\[
+W_{F,v}=\operatorname{OAEP.Enc}_{(n_v,e_v)}(K_F).
+\]
+La API guarda $W_{F,v}$ en la relación de compartición y autoriza al destinatario a descargar el contenido cifrado. El destinatario calcula
+\[
+K_F=\operatorname{OAEP.Dec}_{(n_v,d_v)}(W_{F,v})
+\]
+y verifica y descifra el contenido con AES-GCM. El servidor no recibe $K_F$ en claro. Revocar una compartición impide accesos posteriores a través de la API, pero no elimina las copias que el destinatario ya haya descargado.
+
 \section{Proceso de cifrado y descifrado}
 
 \subsection{Cifrado}
@@ -211,12 +229,12 @@ Desde la interfaz gráfica, el proceso es el siguiente:
     \item El usuario inicia sesión con su cuenta y desbloquea su clave privada RSA una vez.
     \item Elige un archivo que se cifra con una clave AES aleatoria nueva y AES-GCM.
     \item La clave AES se cifra con RSA-OAEP y la clave pública de la cuenta activa.
-    \item El texto cifrado y la clave AES cifrada se guardan en SQLite junto con metadatos del archivo.
+    \item El cliente envía el texto cifrado y la clave AES cifrada a la API, que los almacena junto con metadatos.
 \end{enumerate}
 
-\subsection{Descifrado}
+\subsection{Descifrado de un archivo propio}
 
-Para recuperar un registro desde la biblioteca SQLite:
+Para recuperar un registro desde la biblioteca del servidor:
 
 \begin{enumerate}
     \item Se selecciona un registro de la cuenta autenticada. Su clave privada ya está desbloqueada en memoria.
@@ -226,11 +244,11 @@ Para recuperar un registro desde la biblioteca SQLite:
     \item La interfaz pregunta si se desea abrir el archivo con la aplicación predeterminada del sistema.
 \end{enumerate}
 
-La aplicación también mantiene una pestaña para descifrar archivos externos \texttt{.enc} y \texttt{.key.enc}. La clave AES debe haberse cifrado para la clave pública de la cuenta activa. Esos archivos no se importan automáticamente a la biblioteca SQLite.
+La aplicación también mantiene una pestaña para descifrar archivos externos \texttt{.enc} y \texttt{.key.enc}. La clave AES debe haberse cifrado para la clave pública de la cuenta activa. Esos archivos no se importan automáticamente al servidor.
 
-\section{Base de datos SQLite}
+\section{API y base de datos remota}
 
-La interfaz crea automáticamente la base de datos local \texttt{secure\_storage.sqlite3}. Durante el desarrollo se ubica en \texttt{data/}. Cuando se ejecuta como aplicación empaquetada, el código está preparado para usar la carpeta del usuario \texttt{\%LOCALAPPDATA\%\textbackslash CS2026}, para no intentar escribir junto al ejecutable.
+La interfaz no se conecta directamente a MariaDB: envía peticiones a la API FastAPI. En desarrollo, la API crea \texttt{data/server.sqlite3}; para el servidor se configura \texttt{CS2026\_DATABASE\_URL} con una URL de SQLAlchemy como \texttt{mysql+pymysql://usuario:contraseña@localhost:3306/cs2026}. Las credenciales de MariaDB solo se configuran en el host del servidor.
 
 \subsection{Esquema}
 
@@ -241,21 +259,29 @@ La interfaz crea automáticamente la base de datos local \texttt{secure\_storage
 \textbf{Tabla} & \textbf{Campos principales} & \textbf{Contenido y propósito}\\
 \midrule
 \texttt{users} &
-\texttt{id}, \texttt{username}, \texttt{public\_key}, \texttt{encrypted\_private\_key}, \texttt{created\_at} &
-Almacena una cuenta y su par RSA. La clave privada está cifrada con AES-GCM; la contraseña no se guarda.\\
+\texttt{id}, \texttt{username}, \texttt{password\_salt}, \texttt{password\_hash}, \texttt{public\_key}, \texttt{encrypted\_private\_key} &
+Almacena la cuenta y su par RSA. La clave privada está cifrada con AES-GCM y la contraseña se verifica con scrypt; no se guarda en claro.\\
 \addlinespace
 \texttt{encrypted\_files} &
 \texttt{id}, \texttt{owner\_id}, \texttt{original\_name}, \texttt{encrypted\_content}, \texttt{encrypted\_aes\_key}, \texttt{created\_at}, \texttt{size\_bytes} &
-Almacena el propietario, el contenido cifrado y la clave AES cifrada como BLOB, además de metadatos.\\
+Almacena el propietario, el contenido AES-GCM cifrado y la clave AES envuelta con RSA, además de metadatos.\\
+\addlinespace
+\texttt{file\_shares} &
+\texttt{id}, \texttt{file\_id}, \texttt{recipient\_id}, \texttt{encrypted\_aes\_key} &
+Registra quién recibe el acceso y la clave AES cifrada para la clave pública de ese destinatario.\\
+\addlinespace
+\texttt{api\_sessions} &
+\texttt{token\_hash}, \texttt{user\_id}, \texttt{expires\_at} &
+Almacena el hash del token temporal, nunca el token de sesión en claro.\\
 \bottomrule
 \end{tabular}
 \end{center}
 
-Las relaciones se protegen con claves foráneas de SQLite. Las consultas que insertan datos usan parámetros SQL, y las escrituras se realizan en transacciones. La biblioteca filtra por el identificador del usuario autenticado.
+Las relaciones se protegen con claves foráneas. La API filtra consultas por el usuario autenticado y comprueba la propiedad del archivo o la condición de destinatario antes de entregar contenido o claves.
 
-El contenido original y la clave AES en claro no se guardan en la base de datos. Sin embargo, SQLite no cifra automáticamente el fichero completo: los nombres, tamaños y fechas se conservan como metadatos legibles, y el archivo de base de datos debe mantenerse en un lugar protegido. Los archivos se leen y cifran íntegramente en memoria, por lo que esta primera versión está orientada a archivos de tamaño moderado.
+El contenido original y la clave AES en claro no se guardan en la base de datos. Los nombres, tamaños y fechas son metadatos legibles. MariaDB debe protegerse con permisos mínimos, copias de seguridad y acceso restringido a la red local del servidor. Los archivos se cifran íntegramente en memoria, por lo que esta versión está orientada a tamaños moderados.
 
-Al abrir una base de datos de la versión anterior, el antiguo par RSA y sus archivos se migran a una cuenta local llamada \texttt{usuario}. Para iniciar sesión en esa cuenta se necesita la contraseña que protegía el par anterior.
+Los registros de la base SQLite de la versión anterior no se migran automáticamente a la API remota.
 
 \section{Interfaz y manual de usuario}
 
@@ -275,28 +301,39 @@ py -m venv .venv
 .\.venv\Scripts\Activate.ps1
 \end{verbatim}
 
-Con el entorno activado, se instala PyCryptodome y se inicia la interfaz:
+Con el entorno activado, se instalan las dependencias y se inicia primero la API local:
 
 \begin{verbatim}
 python -m pip install -r requirements.txt
+uvicorn api.main:app --host 127.0.0.1 --port 8000
+\end{verbatim}
+
+En un segundo terminal se inicia la interfaz:
+\begin{verbatim}
 python main.py
 \end{verbatim}
 
+La API local usa SQLite. En producción, el servidor puede configurarse con MariaDB mediante \texttt{CS2026\_DATABASE\_URL}; el cliente usa \texttt{CS2026\_API\_URL} para elegir la URL HTTPS. El cliente solo acepta HTTP cuando la dirección es localhost.
+
 \subsection{Pestaña «Cifrar»}
 
-Al abrir la aplicación, se elige una cuenta y se introduce su contraseña. Si todavía no hay cuentas, se puede crear una; durante el alta se genera un par RSA propio y se protege la clave privada con la contraseña elegida.
+Al abrir la aplicación, se introduce el nombre de usuario y la contraseña. Si todavía no hay una cuenta, se puede crear una; durante el alta, el cliente genera un par RSA propio y protege la clave privada con la contraseña elegida antes de enviarla al servidor.
 
 \begin{enumerate}
     \item Seleccionar el archivo original con el botón de exploración.
-    \item Pulsar \textbf{Cifrar y guardar en SQLite}.
-    \item La aplicación cifra para la cuenta activa e informa del identificador del registro guardado.
+    \item Pulsar \textbf{Cifrar y guardar en servidor}.
+    \item La aplicación cifra localmente y envía el resultado protegido a la API.
 \end{enumerate}
 
-El contenido cifrado y las claves se guardan en la base de datos local. No se genera un archivo cifrado externo en este flujo gráfico.
+El servidor recibe el contenido cifrado, la clave AES envuelta con RSA y los metadatos. No recibe el archivo original ni la clave AES en claro.
 
-\subsection{Pestaña «Biblioteca SQLite»}
+\subsection{Pestaña «Mis archivos»}
 
-La biblioteca muestra el identificador, nombre original, fecha de almacenamiento y tamaño de los registros de la cuenta activa. Se puede actualizar la lista y elegir un registro para descifrarlo. La clave privada desbloqueada al iniciar sesión recupera el archivo; solo hay que seleccionar el destino. La interfaz confirma antes de sobrescribir un destino que ya exista y, al terminar, pregunta si se desea abrir el archivo.
+La biblioteca muestra los archivos de la cuenta activa. Se puede elegir uno para descifrar o pulsar \textbf{Compartir seleccionado}, indicar el usuario destinatario y crear una compartición. La acción \textbf{Retirar acceso} revoca la compartición indicando el nombre de usuario. La clave AES se descifra y vuelve a cifrar en el equipo del propietario.
+
+\subsection{Pestaña «Compartidos conmigo»}
+
+Muestra los archivos que otros usuarios han compartido con la cuenta activa. Para descifrarlos, se elige un destino; el cliente obtiene la clave AES envuelta para el destinatario y la recupera con su clave privada. Al terminar el descifrado se puede abrir el archivo con la aplicación predeterminada.
 
 \subsection{Pestaña «Descifrar»}
 
@@ -344,30 +381,26 @@ La suite \texttt{tests/test\_file\_service.py} contiene pruebas automatizadas pa
 
 La suite \texttt{tests/test\_open\_file.py} comprueba que la apertura utiliza el lanzador predeterminado del sistema sin invocar una shell y que no se intenta abrir una ruta inexistente.
 
-Además, se ha comprobado manualmente la inicialización de la ventana Tkinter con la pestaña de biblioteca SQLite y se ha validado que el flujo de línea de comandos de cifrado/descifrado sigue siendo compatible con ficheros externos.
+La suite \texttt{tests/test\_remote\_api.py} comprueba el rechazo de contraseñas incorrectas, la autenticación por token, el aislamiento de archivos por cuenta y el ciclo de compartición y descifrado por el destinatario.
 
 \section{Seguridad, límites y trabajo futuro}
 
 \subsection{Precauciones}
 
 \begin{itemize}
-    \item Deben conservarse la base de datos SQLite y la contraseña para recuperar archivos guardados desde la interfaz.
-    \item Perder la contraseña o la clave privada protegida hace irrecuperables los archivos asociados.
-    \item La base de datos contiene datos cifrados, pero no es una base de datos cifrada íntegramente. Se recomienda proteger el acceso al dispositivo y realizar copias de seguridad privadas.
+    \item Deben conservarse la base del servidor y la contraseña para recuperar archivos; perder la contraseña o la clave privada protegida hace irrecuperables los archivos asociados.
+    \item La base de datos contiene datos cifrados, pero no está cifrada íntegramente. Se recomienda restringir el acceso al servidor y realizar copias de seguridad privadas.
     \item El nombre original, el tamaño y la fecha de almacenamiento no se cifran.
+    \item La contraseña viaja al endpoint de autenticación; por ello, el despliegue remoto debe usar HTTPS con un certificado válido. No debe exponerse directamente el puerto de MariaDB.
+    \item La clave pública del destinatario se obtiene de la API. Esta implementación no ofrece verificación independiente de huellas digitales y confía en el servidor para distribuir las claves públicas.
+    \item Revocar una compartición no puede borrar copias que el destinatario ya haya descargado o descifrado.
     \item \texttt{.gitignore} excluye datos locales y claves, pero no elimina archivos que Git ya siga ni información publicada anteriormente. Antes de compartir el repositorio debe revisarse su historial y su estado.
 \end{itemize}
 
 \subsection{Estado respecto al enunciado}
 
-La primera fase está implementada a nivel local: cifrado AES-128 por archivo, envoltura RSA de la clave AES, protección de la clave privada, cuentas locales con inicio de sesión y persistencia SQLite en la interfaz. La aplicación también ofrece un flujo por consola independiente.
+La primera y segunda fase están implementadas en el código: registro y autenticación, cifrado/descifrado por usuario, almacenamiento detrás de una API y compartición de la clave AES cifrada para el destinatario. SQLite permite probar el servidor localmente; MariaDB/MySQL está soportado para el despliegue, que requiere configurar el host, TLS y el proxy inverso.
 
-Queda pendiente la segunda fase del enunciado:
-
-\begin{enumerate}
-    \item Compartición segura, cifrando la clave AES del archivo con la clave pública del destinatario y registrando el permiso correspondiente.
-\end{enumerate}
-
-También queda como tarea de entrega empaquetar y probar la aplicación en Windows. La ruta de datos del modo congelado está preparada para \texttt{\%LOCALAPPDATA\%}, pero esta memoria no afirma que ya se haya generado o validado un ejecutable.
+Queda como tarea de entrega desplegar la API en el servidor definitivo y empaquetar y probar el cliente en Windows. No se afirma que el servicio ya esté desplegado en \texttt{magocloud.ddns.net}.
 
 \end{document}

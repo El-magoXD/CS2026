@@ -10,19 +10,24 @@ import threading
 import tkinter as tk
 from collections.abc import Callable
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from Crypto.PublicKey import RSA
 
-from database.database import DEFAULT_DATABASE_PATH, initialize_database, list_users
-from services.file_service import (
-    AuthenticatedUser,
-    authenticate_user,
-    decrypt_external_file,
-    decrypt_file_from_database,
-    encrypt_file_to_database,
-    get_database_files,
-    register_user,
+from services.file_service import decrypt_external_file
+from api.client import (
+    API_BASE_URL,
+    RemoteSession,
+    authenticate_remote_user,
+    decrypt_received_file,
+    decrypt_remote_file,
+    encrypt_file_to_remote,
+    list_received_shares,
+    list_remote_files,
+    logout_remote_user,
+    register_remote_user,
+    revoke_remote_share,
+    share_remote_file,
 )
 
 
@@ -44,15 +49,15 @@ def open_file_with_default_application(path: Path) -> None:
 
 
 class CryptoApp(tk.Tk):
-    def __init__(self, session: AuthenticatedUser) -> None:
+    def __init__(self, session: RemoteSession) -> None:
         super().__init__()
+        self.session = session
         self.user_id = session.id
         self.username = session.username
         self.private_key: RSA.RsaKey | None = session.private_key
         self.title(f"Cifrado de archivos AES + RSA — {self.username}")
         self.geometry("820x560")
         self.minsize(700, 500)
-        initialize_database(DEFAULT_DATABASE_PATH)
         self.protocol("WM_DELETE_WINDOW", self._close_app)
 
         self.results: queue.Queue[tuple[bool, str, str, Path | None]] = queue.Queue()
@@ -84,13 +89,16 @@ class CryptoApp(tk.Tk):
         encrypt_tab = ttk.Frame(notebook, padding=14)
         decrypt_tab = ttk.Frame(notebook, padding=14)
         library_tab = ttk.Frame(notebook, padding=14)
+        shared_tab = ttk.Frame(notebook, padding=14)
         notebook.add(encrypt_tab, text="Cifrar")
         notebook.add(decrypt_tab, text="Descifrar")
-        notebook.add(library_tab, text="Biblioteca SQLite")
+        notebook.add(library_tab, text="Mis archivos")
+        notebook.add(shared_tab, text="Compartidos conmigo")
 
         self._build_encrypt_tab(encrypt_tab)
         self._build_decrypt_tab(decrypt_tab)
         self._build_library_tab(library_tab)
+        self._build_shared_tab(shared_tab)
 
         ttk.Separator(container).pack(fill="x", pady=(12, 8))
         ttk.Label(container, textvariable=self.status, wraplength=680).pack(anchor="w")
@@ -124,15 +132,15 @@ class CryptoApp(tk.Tk):
             parent,
             text=(
                 "La clave privada RSA de esta cuenta ya se desbloqueó al iniciar "
-                "sesión. El contenido cifrado y su clave AES protegida se guardarán "
-                f"en:\n{DEFAULT_DATABASE_PATH}"
+                "sesión. El archivo se cifrará en este dispositivo y se enviará "
+                f"al servidor:\n{API_BASE_URL}"
             ),
             wraplength=620,
         ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(12, 8))
 
         self.encrypt_button = ttk.Button(
             parent,
-            text="Cifrar y guardar en SQLite",
+            text="Cifrar y guardar en servidor",
             command=self._start_encryption,
         )
         self.encrypt_button.grid(row=2, column=0, columnspan=3, sticky="e", pady=(12, 0))
@@ -185,7 +193,7 @@ class CryptoApp(tk.Tk):
             parent,
             text=(
                 f"Archivos de {self.username} guardados en:\n"
-                f"{DEFAULT_DATABASE_PATH}"
+                f"{API_BASE_URL}"
             ),
             wraplength=680,
         ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
@@ -222,7 +230,68 @@ class CryptoApp(tk.Tk):
             command=self._decrypt_selected_database_file,
         )
         self.decrypt_stored_button.grid(row=2, column=1, sticky="e", pady=(12, 0))
+        self.share_button = ttk.Button(
+            parent,
+            text="Compartir seleccionado…",
+            command=self._share_selected_file,
+        )
+        self.share_button.grid(row=3, column=1, sticky="e", pady=(8, 0))
+        self.revoke_share_button = ttk.Button(
+            parent,
+            text="Retirar acceso…",
+            command=self._revoke_selected_file,
+        )
+        self.revoke_share_button.grid(row=3, column=0, sticky="w", pady=(8, 0))
         self._refresh_library()
+
+    def _build_shared_tab(self, parent: ttk.Frame) -> None:
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(1, weight=1)
+        ttk.Label(
+            parent,
+            text="Archivos que otros usuarios han compartido contigo.",
+            wraplength=680,
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
+        self.shared_library = ttk.Treeview(
+            parent,
+            columns=("id", "owner", "name", "created", "size"),
+            show="headings",
+            selectmode="browse",
+        )
+        for column, title in (
+            ("id", "ID"),
+            ("owner", "Compartido por"),
+            ("name", "Archivo"),
+            ("created", "Fecha"),
+            ("size", "Tamaño"),
+        ):
+            self.shared_library.heading(column, text=title)
+        self.shared_library.column("id", width=55, stretch=False, anchor="center")
+        self.shared_library.column("owner", width=120)
+        self.shared_library.column("name", width=220)
+        self.shared_library.column("created", width=170)
+        self.shared_library.column("size", width=100, stretch=False, anchor="e")
+        self.shared_library.grid(row=1, column=0, columnspan=2, sticky="nsew")
+        scrollbar = ttk.Scrollbar(
+            parent,
+            orient="vertical",
+            command=self.shared_library.yview,
+        )
+        scrollbar.grid(row=1, column=2, sticky="ns")
+        self.shared_library.configure(yscrollcommand=scrollbar.set)
+        self.shared_library.bind("<Double-1>", self._on_shared_double_click)
+        ttk.Button(
+            parent,
+            text="Actualizar lista",
+            command=self._refresh_shared_files,
+        ).grid(row=2, column=0, sticky="w", pady=(12, 0))
+        self.decrypt_shared_button = ttk.Button(
+            parent,
+            text="Descifrar seleccionado…",
+            command=self._decrypt_selected_shared_file,
+        )
+        self.decrypt_shared_button.grid(row=2, column=1, sticky="e", pady=(12, 0))
+        self._refresh_shared_files()
 
     def _on_library_double_click(self, event: tk.Event) -> None:
         row = self.library.identify_row(event.y)
@@ -234,7 +303,12 @@ class CryptoApp(tk.Tk):
         entries = self.library.get_children()
         if entries:
             self.library.delete(*entries)
-        for entry in get_database_files(self.user_id, DEFAULT_DATABASE_PATH):
+        try:
+            files = list_remote_files(self.session)
+        except (ConnectionError, RuntimeError, ValueError) as exc:
+            self.status.set(f"No se pudo actualizar la lista: {exc}")
+            return
+        for entry in files:
             self.library.insert(
                 "",
                 "end",
@@ -245,6 +319,123 @@ class CryptoApp(tk.Tk):
                     f"{entry.size_bytes:,} bytes",
                 ),
             )
+
+    def _refresh_shared_files(self) -> None:
+        entries = self.shared_library.get_children()
+        if entries:
+            self.shared_library.delete(*entries)
+        try:
+            files = list_received_shares(self.session)
+        except (ConnectionError, RuntimeError, ValueError) as exc:
+            self.status.set(f"No se pudieron cargar los archivos compartidos: {exc}")
+            return
+        for entry in files:
+            self.shared_library.insert(
+                "",
+                "end",
+                values=(
+                    entry.id,
+                    entry.shared_by,
+                    entry.original_name,
+                    entry.created_at,
+                    f"{entry.size_bytes:,} bytes",
+                ),
+            )
+
+    def _share_selected_file(self) -> None:
+        selection = self.library.selection()
+        if not selection:
+            messagebox.showerror(
+                "No hay selección",
+                "Selecciona un archivo de tu biblioteca.",
+                parent=self,
+            )
+            return
+        values = self.library.item(selection[0], "values")
+        file_id = int(values[0])
+        recipient = simpledialog.askstring(
+            "Compartir archivo",
+            "Nombre de usuario del destinatario:",
+            parent=self,
+        )
+        if not recipient:
+            return
+        self._run_in_background(
+            self.share_button,
+            "Archivo compartido",
+            lambda: self._share_file(file_id, recipient),
+        )
+
+    def _share_file(self, file_id: int, recipient: str) -> str:
+        share_remote_file(file_id, recipient, self.session)
+        return f"Se compartió el archivo con {recipient}."
+
+    def _revoke_selected_file(self) -> None:
+        selection = self.library.selection()
+        if not selection:
+            messagebox.showerror(
+                "No hay selección",
+                "Selecciona un archivo de tu biblioteca.",
+                parent=self,
+            )
+            return
+        values = self.library.item(selection[0], "values")
+        file_id = int(values[0])
+        recipient = simpledialog.askstring(
+            "Retirar acceso",
+            "Nombre de usuario del destinatario:",
+            parent=self,
+        )
+        if not recipient:
+            return
+        self._run_in_background(
+            self.revoke_share_button,
+            "Acceso retirado",
+            lambda: self._revoke_share(file_id, recipient),
+        )
+
+    def _revoke_share(self, file_id: int, recipient: str) -> str:
+        revoke_remote_share(file_id, recipient, self.session)
+        return f"Se retiró el acceso de {recipient} a este archivo."
+
+    def _on_shared_double_click(self, event: tk.Event) -> None:
+        row = self.shared_library.identify_row(event.y)
+        if row:
+            self.shared_library.selection_set(row)
+            self._decrypt_selected_shared_file()
+
+    def _decrypt_selected_shared_file(self) -> None:
+        selection = self.shared_library.selection()
+        if not selection:
+            messagebox.showerror(
+                "No hay selección",
+                "Selecciona un archivo compartido contigo.",
+                parent=self,
+            )
+            return
+        values = self.shared_library.item(selection[0], "values")
+        share_id = int(values[0])
+        original_name = str(values[2])
+        output = filedialog.asksaveasfilename(
+            title="Guardar archivo descifrado",
+            initialdir=str(Path.home()),
+            initialfile=original_name,
+        )
+        if not output:
+            return
+        destination = Path(output).expanduser().resolve()
+        if not self._confirm_overwrite([destination]):
+            return
+        self._run_in_background(
+            self.decrypt_shared_button,
+            "Descifrado completado",
+            lambda: self._decrypt_shared_file(share_id, destination),
+            open_after_success=destination,
+        )
+
+    def _decrypt_shared_file(self, share_id: int, output: Path) -> str:
+        destination = decrypt_received_file(share_id, output, self.session)
+        return f"Archivo descifrado correctamente:\n{destination}"
 
     def _choose_encrypt_input(self) -> None:
         selected = filedialog.askopenfilename(title="Seleccionar archivo para cifrar")
@@ -317,17 +508,13 @@ class CryptoApp(tk.Tk):
 
         self._run_in_background(
             self.encrypt_button,
-            "Cifrado guardado en SQLite",
+            "Archivo cifrado en servidor",
             lambda: self._encrypt(source),
         )
 
     def _encrypt(self, source: Path) -> str:
-        file_id = encrypt_file_to_database(
-            source,
-            self.user_id,
-            DEFAULT_DATABASE_PATH,
-        )
-        return f"{source.name} se guardó cifrado en SQLite con el ID {file_id}."
+        file_id = encrypt_file_to_remote(source, self.session)
+        return f"{source.name} se guardó cifrado en el servidor con el ID {file_id}."
 
     def _decrypt_selected_database_file(self) -> None:
         selection = self.library.selection()
@@ -362,13 +549,7 @@ class CryptoApp(tk.Tk):
         )
 
     def _decrypt_database_file(self, file_id: int, output: Path) -> str:
-        destination = decrypt_file_from_database(
-            file_id,
-            self.user_id,
-            self._require_private_key(),
-            output,
-            DEFAULT_DATABASE_PATH,
-        )
+        destination = decrypt_remote_file(file_id, output, self.session)
         return f"Archivo descifrado correctamente:\n{destination}"
 
     def _start_decryption(self) -> None:
@@ -475,7 +656,7 @@ class CryptoApp(tk.Tk):
             self.active_button = None
         self.status.set(message.splitlines()[0])
         if succeeded:
-            if title == "Cifrado guardado en SQLite":
+            if title == "Archivo cifrado en servidor":
                 self._refresh_library()
             if open_after_success is not None:
                 should_open = messagebox.askyesno(
@@ -499,6 +680,15 @@ class CryptoApp(tk.Tk):
 
     def _close_app(self) -> None:
         self.private_key = None
+        try:
+            logout_remote_user(self.session)
+        except (ConnectionError, RuntimeError, ValueError) as exc:
+            messagebox.showwarning(
+                "Sesión no cerrada en el servidor",
+                f"La sesión local se cerrará, pero el token seguirá válido hasta que "
+                f"expire:\n{exc}",
+                parent=self,
+            )
         self.destroy()
 
 
@@ -507,28 +697,23 @@ class AccountLoginDialog(tk.Tk):
         super().__init__()
         self.title("Iniciar sesión")
         self.resizable(False, False)
-        self.session: AuthenticatedUser | None = None
+        self.session: RemoteSession | None = None
         self.username = tk.StringVar()
         self.password = tk.StringVar()
         self._build_ui()
-        self._refresh_users()
         self.protocol("WM_DELETE_WINDOW", self._cancel)
 
     def _build_ui(self) -> None:
         frame = ttk.Frame(self, padding=20)
         frame.pack(fill="both", expand=True)
-        ttk.Label(frame, text="Selecciona tu usuario e inicia sesión").grid(
+        ttk.Label(frame, text=f"Servidor: {API_BASE_URL}").grid(
             row=0, column=0, columnspan=2, sticky="w", pady=(0, 12)
         )
 
         ttk.Label(frame, text="Usuario").grid(row=1, column=0, sticky="w", pady=6)
-        self.user_selector = ttk.Combobox(
-            frame,
-            textvariable=self.username,
-            state="readonly",
-            width=28,
+        ttk.Entry(frame, textvariable=self.username, width=30).grid(
+            row=1, column=1, sticky="ew", padx=(12, 0), pady=6
         )
-        self.user_selector.grid(row=1, column=1, sticky="ew", padx=(12, 0), pady=6)
 
         ttk.Label(frame, text="Contraseña").grid(row=2, column=0, sticky="w", pady=6)
         password_entry = ttk.Entry(frame, textvariable=self.password, show="*")
@@ -549,30 +734,19 @@ class AccountLoginDialog(tk.Tk):
         _ = _event
         self._login()
 
-    def _refresh_users(self, select: str | None = None) -> None:
-        users = list_users(DEFAULT_DATABASE_PATH)
-        self.user_selector.configure(values=users)
-        if select and select in users:
-            self.username.set(select)
-        elif users and self.username.get() not in users:
-            self.username.set(users[0])
-        elif not users:
-            self.username.set("")
-        self.login_button.configure(state="normal" if users else "disabled")
-
     def _login(self) -> None:
         username = self.username.get().strip()
         password = self.password.get()
         if not username or not password:
             messagebox.showerror(
                 "Faltan datos",
-                "Selecciona un usuario e introduce su contraseña.",
+                "Introduce tu usuario y contraseña.",
                 parent=self,
             )
             return
         try:
-            self.session = authenticate_user(username, password, DEFAULT_DATABASE_PATH)
-        except ValueError as exc:
+            self.session = authenticate_remote_user(username, password)
+        except (ConnectionError, RuntimeError, ValueError) as exc:
             self.password.set("")
             messagebox.showerror("No se pudo iniciar sesión", str(exc), parent=self)
             return
@@ -591,9 +765,9 @@ class AccountLoginDialog(tk.Tk):
             )
             return
         try:
-            register_user(username, password, DEFAULT_DATABASE_PATH)
-            self.session = authenticate_user(username, password, DEFAULT_DATABASE_PATH)
-        except ValueError as exc:
+            register_remote_user(username, password)
+            self.session = authenticate_remote_user(username, password)
+        except (ConnectionError, RuntimeError, ValueError) as exc:
             messagebox.showerror("No se pudo crear el usuario", str(exc), parent=self)
             return
         self.password.set("")
@@ -659,7 +833,6 @@ class RegistrationDialog(tk.Toplevel):
 
 
 def main() -> None:
-    initialize_database(DEFAULT_DATABASE_PATH)
     login = AccountLoginDialog()
     login.mainloop()
     session = login.session
